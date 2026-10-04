@@ -1,0 +1,40 @@
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --c-bg: #fff;
+  --c-scrollbar: #eee;
+}
+
+html.dark {
+  --c-bg: #121212;
+  --c-scrollbar: #222;
+  color-scheme: dark;
+}
+
+html {
+  background-color: var(--c-bg);
+  overflow-x: hidden;
+  overflow-y: scroll;
+  /* scrollbar-gutter: stable; */
+}
+
+* {
+  scrollbar-color: var(--c-scrollbar) transparent;
+}
+
+/* Transitions */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
