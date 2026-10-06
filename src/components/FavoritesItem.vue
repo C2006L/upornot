@@ -200,9 +200,9 @@ function downloadImage() {
 
 <template>
   <div
-    p="4" mb-4
-    border="~ base hover-base rounded-md"
-    bg="light/80 dark:dark/80"
+    p="4 sm:5" mb-4 app-card
+    hover="border-teal-300/70 dark:border-teal-500/30 shadow-md"
+    transition duration-200
     flex flex-col gap-3 items-stretch
   >
     <div flex="~ col gap-3">

@@ -16,17 +16,17 @@ const isDisabled = computed(() =>
 
 const variantClass = computed(() => {
   if (props.variant === 'danger') {
-    return 'bg-red-400 hover:bg-red-500 disabled:bg-red-500'
+    return 'bg-red-500 hover:bg-red-400 disabled:bg-red-500 shadow-red-500/15'
   }
-  return 'bg-teal-600 hover:bg-teal-700 disabled:bg-teal-700'
+  return 'bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 disabled:from-slate-600 disabled:to-slate-600 shadow-teal-500/20'
 })
 </script>
 
 <template>
   <button
     :disabled="isDisabled"
-    text-gray-100 font-bold rounded h-12 w-full
-    transition-colors duration-200
+    text-white font-bold rounded-xl h-13 w-full shadow-lg
+    transition duration-200 active:translate-y-0.5
     disabled:text-gray-400
     :class="[
       variantClass,
@@ -38,7 +38,10 @@ const variantClass = computed(() => {
     ]"
   >
     <template v-if="props.loading && props.loadingText">
-      {{ props.loadingText }}
+      <span flex="~ items-center justify-center gap-2">
+        <span i-carbon-circle-dash animate-spin />
+        {{ props.loadingText }}
+      </span>
     </template>
     <template v-else-if="isDisabled && props.disabledText">
       {{ props.disabledText }}

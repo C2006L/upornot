@@ -77,6 +77,7 @@ function handleClick() {
 
 function handleDrop(e: DragEvent) {
   e.preventDefault()
+  dragCounter.value = 0
   if (inputMode.value !== 'file')
     return
   const files = e.dataTransfer?.files
@@ -133,25 +134,29 @@ function switchMode(mode: 'file' | 'url') {
   removeImage()
   inputMode.value = mode
 }
+
+function handleDragLeave() {
+  dragCounter.value = Math.max(0, dragCounter.value - 1)
+}
 </script>
 
 <template>
   <div>
     <!-- 模式切换 -->
-    <div mb-3 flex="~ gap-1" p-1 rounded-lg bg-gray-100 dark:bg-gray-800 w-fit>
+    <div mb-4 flex="~ gap-1" p-1 rounded-xl bg-slate-100 w-fit class="dark:bg-white/5">
       <button
-        px-3 py-1.5 rounded-md text-xs font-medium transition-colors duration-200 cursor-pointer
+        px-3 py-1.5 rounded-lg text-xs font-semibold transition duration-200 cursor-pointer
         :class="inputMode === 'file'
-          ? 'bg-teal-600 text-white shadow-sm'
+          ? 'bg-white text-teal-700 shadow-sm dark:bg-white/10 dark:text-teal-300'
           : 'text-gray-600 dark:text-gray-300 hover:text-teal-600 dark:hover:text-teal-400'"
         @click="switchMode('file')"
       >
         图片文件
       </button>
       <button
-        px-3 py-1.5 rounded-md text-xs font-medium transition-colors duration-200 cursor-pointer
+        px-3 py-1.5 rounded-lg text-xs font-semibold transition duration-200 cursor-pointer
         :class="inputMode === 'url'
-          ? 'bg-teal-600 text-white shadow-sm'
+          ? 'bg-white text-teal-700 shadow-sm dark:bg-white/10 dark:text-teal-300'
           : 'text-gray-600 dark:text-gray-300 hover:text-teal-600 dark:hover:text-teal-400'"
         @click="switchMode('url')"
       >
@@ -160,14 +165,15 @@ function switchMode(mode: 'file' | 'url') {
     </div>
 
     <!-- 文件上传模式 -->
-    <div v-if="inputMode === 'file'" @drop="handleDrop" @dragleave.prevent.stop="dragCounter--" @dragenter.prevent.stop="dragCounter++" @dragover.prevent.stop>
+    <div v-if="inputMode === 'file'" @drop="handleDrop" @dragleave.prevent.stop="handleDragLeave" @dragenter.prevent.stop="dragCounter++" @dragover.prevent.stop>
       <div
-        border="2 base hover-base rounded-md"
+        border="2 slate-200 dark:white/10 rounded-2xl"
         :class="[
           !hasValue ? 'border-dashed' : 'border-solid',
-          isDragOver ? '!border-teal-600 !dark:border-teal-700' : '',
+          isDragOver ? '!border-teal-500 bg-teal-500/5 scale-[1.005]' : 'hover:border-teal-400/70',
         ]"
-        min-h-40 w-full cursor-pointer relative overflow-hidden
+        min-h-64 w-full cursor-pointer relative overflow-hidden bg="slate-50/60 dark:white/2"
+        transition duration-200
         @click="handleClick"
       >
         <input
@@ -178,19 +184,23 @@ function switchMode(mode: 'file' | 'url') {
         <div
           v-show="!hasValue && !isDragOver"
           flex="~ col items-center justify-center"
-          opacity-60
-          h-full min-h-40
+          h-full min-h-64 text-slate-500 dark:text-slate-400
         >
-          <div i-carbon-add-large text-2xl />
+          <span w-14 h-14 mb-4 rounded-2xl flex="~ items-center justify-center" bg="teal-500/10" text-teal-600 dark:text-teal-300>
+            <div i-carbon-cloud-upload text-2xl />
+          </span>
+          <strong text-sm text-slate-700 dark:text-slate-200>拖入图片，或点击选择文件</strong>
+          <span text-xs mt-2 op-55>支持 JPG、PNG、WebP，最大 {{ props.maxSize }}MB</span>
         </div>
 
         <div
           v-show="!hasValue && isDragOver"
           flex="~ col items-center justify-center"
           bg="light dark:dark"
-          opacity-60 h-full min-h-40 transition duration-200
+          h-full min-h-64 transition duration-200 text-teal-600 dark:text-teal-300
         >
-          <div i-carbon-document-add text-2xl />
+          <div i-carbon-document-add text-3xl mb-3 />
+          <strong text-sm>松开即可上传</strong>
         </div>
 
         <div
@@ -200,17 +210,25 @@ function switchMode(mode: 'file' | 'url') {
           <img
             :src="previewUrl"
             class="preview"
-            rounded max-h-100 max-w-full object-contain block
+            max-h-110 max-w-full object-contain block
           >
           <button
-            absolute top-2 right-2 z-10 p-1
-            border="rounded-full" transition
-            hover="bg-dark/20 dark:bg-light/20"
+            absolute top-3 right-3 z-10 w-9 h-9
+            rounded-xl flex="~ items-center justify-center" bg="black/55" text-white backdrop-blur transition
+            class="hover:bg-black/75"
             cursor-pointer
             title="preview image"
             @click.stop="handlePreview"
           >
-            <div i-stash-expand-diagonal-duotone text-2xl text-teal-700 />
+            <div i-stash-expand-diagonal-duotone text-lg />
+          </button>
+          <button
+            absolute top-3 left-3 z-10 w-9 h-9
+            rounded-xl flex="~ items-center justify-center" bg="black/55" text-white backdrop-blur transition
+            hover:bg-red-500 cursor-pointer title="移除图片"
+            @click.stop="removeImage"
+          >
+            <div i-carbon-trash-can />
           </button>
         </div>
       </div>
@@ -218,21 +236,20 @@ function switchMode(mode: 'file' | 'url') {
 
     <!-- URL 模式 -->
     <div v-else flex="~ col gap-3">
-      <input
-        v-model="urlInput"
-        type="url"
-        placeholder="粘贴图片链接，回车确认"
-        w-full px-3 py-2 rounded-lg
-        border="~ base focus:teal-600"
-        bg="transparent"
-        outline="none"
-        transition-colors duration-200
-        @keydown.enter="confirmUrl"
-      >
+      <div flex="~ col sm:row gap-2">
+        <input
+          v-model="urlInput" type="url" placeholder="粘贴图片链接"
+          app-field flex-1 @keydown.enter="confirmUrl"
+        >
+        <button soft-btn whitespace-nowrap @click="confirmUrl">
+          <div i-carbon-arrow-right />
+          加载图片
+        </button>
+      </div>
       <div
         v-if="hasValue"
-        border="~ base rounded-md"
-        min-h-40 w-full
+        border="~ slate-200 dark:white/10 rounded-2xl"
+        min-h-64 w-full bg="slate-50/60 dark:white/2"
         flex flex-col items-center justify-center relative overflow-hidden
       >
         <img

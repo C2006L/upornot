@@ -130,11 +130,14 @@ function navigateToSettings() {
 </script>
 
 <template>
-  <div mb-6 text-left px-1>
-    <h1 text-3xl font-bold>
+  <div mb-7 text-left app-card p="6 sm:8" class="page-intro">
+    <div eyebrow mb-2>
+      Saved creations
+    </div>
+    <h1 text="3xl sm:4xl" font-black tracking-tight>
       收藏夹
     </h1>
-    <p text-sm op-50 mt-1>
+    <p text-sm text-slate-500 dark:text-slate-400 mt-2>
       浏览和管理你保存的分析结果
     </p>
   </div>
@@ -191,7 +194,7 @@ function navigateToSettings() {
 
         <!-- 底部操作 -->
         <div
-          mt-2 rounded-xl border="~ base" bg="white dark:black" px-4 py-3
+          mt-2 app-card px-4 py-3
           flex="~ items-center gap-3 wrap"
         >
           <button
@@ -227,7 +230,7 @@ function navigateToSettings() {
       <!-- empty -->
       <template v-else>
         <div
-          rounded-xl border="~ base" bg="white dark:black"
+          app-card
           flex flex-col items-center justify-center
           min-h-60 mb-4
         >

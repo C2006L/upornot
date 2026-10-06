@@ -26,8 +26,10 @@ const rendered = computed(() => {
 .markdown-body :deep(h1),
 .markdown-body :deep(h2),
 .markdown-body :deep(h3) {
-  font-weight: bold;
-  margin: 0.5em 0;
+  color: inherit;
+  font-weight: 750;
+  letter-spacing: -0.015em;
+  margin: 1.35em 0 0.55em;
 }
 .markdown-body :deep(h1) {
   font-size: 1.5em;
@@ -39,7 +41,7 @@ const rendered = computed(() => {
   font-size: 1.1em;
 }
 .markdown-body :deep(p) {
-  margin: 0.5em 0;
+  margin: 0.85em 0;
 }
 .markdown-body :deep(ul),
 .markdown-body :deep(ol) {
@@ -50,15 +52,16 @@ const rendered = computed(() => {
   margin: 0.25em 0;
 }
 .markdown-body :deep(code) {
-  background: rgba(128, 128, 128, 0.2);
-  padding: 0.1em 0.3em;
-  border-radius: 0.25em;
-  font-family: monospace;
+  background: rgba(15, 118, 110, 0.1);
+  padding: 0.15em 0.35em;
+  border-radius: 0.35em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .markdown-body :deep(pre) {
-  background: rgba(128, 128, 128, 0.2);
-  padding: 0.75em;
-  border-radius: 0.5em;
+  background: rgba(15, 23, 42, 0.96);
+  color: #e2e8f0;
+  padding: 1em 1.1em;
+  border-radius: 0.85em;
   overflow-x: auto;
   margin: 0.5em 0;
 }
@@ -67,10 +70,10 @@ const rendered = computed(() => {
   padding: 0;
 }
 .markdown-body :deep(blockquote) {
-  border-left: 3px solid rgba(128, 128, 128, 0.5);
-  padding-left: 1em;
-  margin: 0.5em 0;
-  opacity: 0.8;
+  border-left: 3px solid #14b8a6;
+  padding: 0.15em 0 0.15em 1em;
+  margin: 1em 0;
+  color: #64748b;
 }
 .markdown-body :deep(strong) {
   font-weight: bold;

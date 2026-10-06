@@ -609,17 +609,20 @@ async function importSettings(data: any) {
 </script>
 
 <template>
-  <div mb-6 text-left px-1>
-    <h1 text-3xl font-bold>
+  <div mb-7 text-left app-card p="6 sm:8" class="page-intro">
+    <div eyebrow mb-2>
+      Workspace preferences
+    </div>
+    <h1 text="3xl sm:4xl" font-black tracking-tight>
       设置
     </h1>
-    <p text-sm op-50 mt-1>
+    <p text-sm text-slate-500 dark:text-slate-400 mt-2>
       管理 API 密钥、模型和 Prompt 配置
     </p>
   </div>
 
   <!-- 供应商配置 -->
-  <div mb-4 rounded-xl border="~ base" bg="white dark:black" p-6 text-left>
+  <div mb-5 app-card p="5 sm:6" text-left>
     <div flex="~ items-center gap-2" mb-5>
       <div w-1 h-6 rounded-full class="bg-teal-500" />
       <h2 text-lg font-semibold>
@@ -1044,7 +1047,7 @@ async function importSettings(data: any) {
   </div>
 
   <!-- Prompt 配置 -->
-  <div mb-4 rounded-xl border="~ base" bg="white dark:black" p-6 text-left>
+  <div mb-5 app-card p="5 sm:6" text-left>
     <div flex="~ items-center justify-between" mb-5>
       <div flex="~ items-center gap-2">
         <div w-1 h-6 rounded-full class="bg-orange-500" />
@@ -1199,7 +1202,7 @@ async function importSettings(data: any) {
   </div>
 
   <!-- WebDAV 同步 -->
-  <div mb-4 rounded-xl border="~ base" bg="white dark:black" p-6 text-left>
+  <div mb-5 app-card p="5 sm:6" text-left>
     <div flex="~ items-center gap-2" mb-5>
       <div w-1 h-6 rounded-full class="bg-teal-500" />
       <h2 text-lg font-semibold>
@@ -1234,7 +1237,8 @@ async function importSettings(data: any) {
         :class="{ 'op-50 cursor-not-allowed': webdavSyncing }"
         @click="webdavUpload"
       >
-        <div :class="webdavAction === 'upload' ? 'i-carbon-circle-dash animate-spin' : 'i-carbon-cloud-upload'" />
+        <div v-if="webdavAction === 'upload'" i-carbon-circle-dash animate-spin />
+        <div v-else i-carbon-cloud-upload />
         上传到 WebDAV
       </button>
       <button
@@ -1245,7 +1249,8 @@ async function importSettings(data: any) {
         :class="{ 'op-50 cursor-not-allowed': webdavSyncing }"
         @click="webdavDownload"
       >
-        <div :class="webdavAction === 'download' ? 'i-carbon-circle-dash animate-spin' : 'i-carbon-cloud-download'" />
+        <div v-if="webdavAction === 'download'" i-carbon-circle-dash animate-spin />
+        <div v-else i-carbon-cloud-download />
         从 WebDAV 下载
       </button>
     </div>
@@ -1271,7 +1276,7 @@ async function importSettings(data: any) {
   </div>
 
   <!-- 设置管理 -->
-  <div mb-4 rounded-xl border="~ base" bg="white dark:black" p-6 text-left>
+  <div mb-5 app-card p="5 sm:6" text-left>
     <div flex="~ items-center gap-2" mb-2>
       <div w-1 h-6 rounded-full bg-gray-400 />
       <h2 text-lg font-semibold>

@@ -38,7 +38,7 @@ function toggleSortOrder() {
 
 <template>
   <div
-    rounded-xl border="~ base" bg="white dark:black" px-4 py-3
+    app-card px-4 py-3
     flex="~ col gap-3"
   >
     <!-- 分页器 -->

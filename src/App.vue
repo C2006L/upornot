@@ -58,8 +58,8 @@ onBeforeUnmount(() => {
 <template>
   <Header />
   <main
-    font-sans p="t-3 l-3 r-3 b-10" m-auto max-w-220
-    text="center gray-700 dark:gray-200" select-none
+    p="t-6 x-4 sm:x-6 b-16" m-auto max-w-300
+    text="center slate-800 dark:slate-200"
   >
     <RouterView />
     <!-- <TheFooter /> -->

@@ -30,16 +30,15 @@ function togglePasswordVisibility() {
       v-model="modelValue"
       :type="inputType"
       v-bind="$attrs"
-      p="x-4 y-2" w-full bg="transparent"
-      border="~ rounded base hover-base focus-base"
-      outline="none active:none"
+      app-field
+      :class="props.type === 'password' ? 'pr-11' : ''"
     >
 
     <button
       v-if="props.type === 'password'"
       type="button"
-      p="x-3 y-3" translate-y--0.5
-      hover:text-teal-700 text-gray-300 dark:text-gray-800
+      w-10 h-full top-0
+      hover:text-teal-700 text-slate-400 dark:text-slate-500
       transform transition-colors duration-200
       right-0 absolute
       @click="togglePasswordVisibility"
