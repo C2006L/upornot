@@ -29,7 +29,7 @@ import { toggleDark } from '~/logic'
       <a
         i-carbon-logo-github icon-btn
         rel="noreferrer"
-        href="https://github.com/Lu-Jiejie/fuck-or-not"
+        href="https://github.com/C2006L/upornot"
         target="_blank"
         title="GitHub"
       />

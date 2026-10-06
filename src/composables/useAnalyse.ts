@@ -1,15 +1,75 @@
-import type { FavoriteResult } from '~/types'
+import type { FavoriteResult, ProviderConfig } from '~/types'
 import { useStorage } from '@vueuse/core'
-import { computed, ref, watch, watchEffect } from 'vue'
-import { addAdditionalPreset, additionalPromptPresets, computeStringHash, customPrompts, favoriteResults, fileToBase64, generateContent, getPromptById, providers, removeAdditionalPreset, saveImage } from '~/logic'
+import { computed, ref } from 'vue'
+import { addAdditionalPreset, additionalPromptPresets, computeStringHash, favoriteResults, fileToBase64, generateContent, removeAdditionalPreset, saveImage } from '~/logic'
+
+const DEFAULT_SYSTEM_INSTRUCTION = '你是一个图像理解与写作助手。请严格遵循用户给出的任务、格式、语言和篇幅要求，不要擅自简化任务。'
+const MAX_CONTINUATION_ROUNDS = 3
+
+function getRequestedMinLength(prompt: string): number | undefined {
+  const matches = [...prompt.matchAll(/(?:不少于|至少|最低|最少|总字数(?:为|达到|不少于)?)\s*(\d{2,5})\s*字/g)]
+  const lengths = matches.map(match => Number(match[1])).filter(Number.isFinite)
+  return lengths.length > 0 ? Math.max(...lengths) : undefined
+}
+
+function countOutputCharacters(text: string): number {
+  return text.replace(/\s/g, '').length
+}
+
+function buildTaskContract(taskPrompt: string, additionalPrompt: string, requestedMinLength?: number): string {
+  const sections = [
+    '## 执行协议',
+    '下面的“用户任务”是本次输出的核心约束，不得弱化、概括、替换或擅自省略。写作前先在内部整理人物、场景、时间线、因果关系和需要覆盖的要求，但不要输出规划过程。正文必须沿一条清晰主线自然推进，避免无铺垫的场景跳转、身份变化和前后矛盾。',
+    '## 用户任务',
+    taskPrompt,
+  ]
+  if (additionalPrompt)
+    sections.push('## 用户补充要求（与图片识别冲突时以此为准）', additionalPrompt)
+  if (requestedMinLength)
+    sections.push('## 篇幅硬约束', `正文不得少于 ${requestedMinLength} 字。在达到该长度前不要总结、收尾或提前结束，但也不得使用重复句子凑字数。`)
+  sections.push('## 输出要求', '只输出最终正文，不要复述要求，不要展示提纲、分析或自我说明。')
+  return sections.join('\n\n')
+}
+
+function removeContinuationOverlap(existingText: string, continuationText: string): string {
+  const maxOverlap = Math.min(existingText.length, continuationText.length, 2000)
+  for (let length = maxOverlap; length >= 12; length--) {
+    if (existingText.endsWith(continuationText.slice(0, length)))
+      return continuationText.slice(length).trimStart()
+  }
+  return continuationText
+}
+
+function removeConsecutiveDuplicateSentences(text: string): string {
+  const sentences = text.match(/[^。！？!?]*[。！？!?]+|[^。！？!?]+$/g)
+  if (!sentences)
+    return text
+
+  const result: string[] = []
+  let previousKey = ''
+  for (const sentence of sentences) {
+    const key = sentence.replace(/\s/g, '').trim()
+    if (key.length >= 8 && key === previousKey)
+      continue
+    result.push(sentence)
+    previousKey = key
+  }
+  return result.join('')
+}
 
 export function useAnalyse() {
   const image = ref<File | string | null>(null)
   const base64Image = ref<string | null>(null)
 
-  const selectedProviderId = useStorage<string | undefined>('selected-provider-id', undefined)
-  const selectedModelId = useStorage('selected-model', '')
-  const selectedPromptId = useStorage('selected-prompt-id', 'novel')
+  const selectedApiUrl = useStorage<string>('selected-api-url', 'http://localhost:11434')
+  const selectedApiKey = useStorage<string>('selected-api-key', 'ollama')
+  const selectedModelId = useStorage('selected-model', 'gemma3:4b')
+  const selectedPromptText = useStorage<string>('selected-prompt-text', '分析这张图片')
+  const generationTemperature = useStorage<number>('generation-temperature', 0.7)
+  const generationMaxTokens = useStorage<number>('generation-max-tokens', 8192)
+  const generationContextTokens = useStorage<number>('generation-context-tokens', 8192)
+  const generationRepeatPenalty = useStorage<number>('generation-repeat-penalty', 1.15)
+  const autoContinueLongText = useStorage<boolean>('auto-continue-long-text', true)
   const additionalPrompt = ref('')
   const result = ref('')
   const errorMsg = ref('')
@@ -22,43 +82,8 @@ export function useAnalyse() {
 
   const lastFavoriteResult = ref<FavoriteResult | null>(null)
 
-  const selectedProvider = computed(() => {
-    if (!selectedProviderId.value)
-      return undefined
-    return providers.value.find(p => p.id === selectedProviderId.value)
-  })
-
-  // 当供应商 id 改变时，清空已选的模型
-  watch(selectedProviderId, () => {
-    selectedModelId.value = ''
-  })
-
-  // 确保选中的 Prompt ID 有效
-  watchEffect(() => {
-    const prompts = customPrompts.value
-    const exists = prompts.some(p => p.id === selectedPromptId.value)
-    if (!exists && prompts.length > 0)
-      selectedPromptId.value = prompts[0].id
-  })
-
-  const providerSelectOptions = computed(() =>
-    providers.value.map(p => ({ label: p.name, value: p.id })),
-  )
-
-  const modelSelectOptions = computed(() => {
-    if (!selectedProvider.value)
-      return []
-    return selectedProvider.value.models.map(m => ({ label: m, value: m }))
-  })
-
-  const promptSelectOptions = computed(() =>
-    customPrompts.value.map(prompt => ({ label: prompt.name, value: prompt.id })),
-  )
-
-  const selectedPrompt = computed(() => getPromptById(selectedPromptId.value))
-
   const analyseButtonDisabled = computed(() => {
-    if (!selectedModelId.value || !selectedPromptId.value || !selectedProvider.value)
+    if (!selectedModelId.value || !selectedPromptText.value || !selectedApiUrl.value)
       return true
     if (typeof image.value === 'string')
       return !image.value
@@ -137,12 +162,12 @@ export function useAnalyse() {
     ].join('\n')
     lastFavoriteResult.value = {
       model: selectedModelId.value || 'test-model',
-      mode: selectedPromptId.value,
+      mode: 'custom',
       imageHash: '',
       mimeType: 'image/png',
       time: Date.now(),
       result: result.value,
-      prompt: selectedPrompt.value?.content ?? '',
+      prompt: selectedPromptText.value,
       additionalPrompt: additionalPrompt.value.trim(),
       _pendingBase64: '',
       _sourceUrl: undefined,
@@ -164,14 +189,11 @@ export function useAnalyse() {
   }
 
   async function handleAnalyseButtonClick() {
-    const provider = selectedProvider.value
-    if (!provider) {
-      errorMsg.value = '请先选择供应商。'
-      return
-    }
+    const apiUrl = selectedApiUrl.value
+    const apiKey = selectedApiKey.value
 
-    if (!provider.apiKey) {
-      errorMsg.value = `请先配置「${provider.name}」的 API 密钥。`
+    if (!apiUrl) {
+      errorMsg.value = '请先填写 API 地址。'
       return
     }
 
@@ -184,8 +206,8 @@ export function useAnalyse() {
       return
     }
 
-    if (!selectedPrompt.value) {
-      errorMsg.value = '请先选择 Prompt。'
+    if (!selectedPromptText.value) {
+      errorMsg.value = '请先填写 Prompt。'
       return
     }
 
@@ -194,11 +216,10 @@ export function useAnalyse() {
     result.value = ''
 
     try {
-      const systemInstruction = selectedPrompt.value.content || '分析这张图片'
-
-      const userText = additionalPrompt.value.trim()
-        ? `用户补充说明：${additionalPrompt.value.trim()}`
-        : ''
+      const taskPrompt = selectedPromptText.value.trim()
+      const additionalTaskPrompt = additionalPrompt.value.trim()
+      const requestedMinLength = getRequestedMinLength(taskPrompt)
+      const userText = buildTaskContract(taskPrompt, additionalTaskPrompt, requestedMinLength)
 
       let sourceUrl: string | undefined
       let mimeType: string
@@ -213,24 +234,77 @@ export function useAnalyse() {
         mimeType = image.value!.type
       }
       const contents: Parameters<typeof generateContent>[1] = [
+        { text: userText },
         { inlineData: { data: base64Image.value, mimeType } },
       ]
-      if (userText)
-        contents.push({ text: userText })
 
-      const response = await generateContent(
+      const provider: ProviderConfig = {
+        id: 'direct-api',
+        name: '当前 API',
+        type: 'openai' as const,
+        apiUrl,
+        apiKey,
+        models: [selectedModelId.value],
+        generationConfig: {
+          temperature: generationTemperature.value,
+          maxTokens: generationMaxTokens.value,
+          numCtx: generationContextTokens.value,
+          repeatPenalty: generationRepeatPenalty.value,
+          repeatLastN: 512,
+        },
+      }
+
+      let response = await generateContent(
         selectedModelId.value,
         contents,
-        systemInstruction,
+        DEFAULT_SYSTEM_INSTRUCTION,
         provider,
         (chunk) => {
           result.value += chunk
         },
       )
+
+      let fullText = removeConsecutiveDuplicateSentences(response.text || '')
+      if (autoContinueLongText.value && requestedMinLength) {
+        for (let round = 0; round < MAX_CONTINUATION_ROUNDS && countOutputCharacters(fullText) < requestedMinLength; round++) {
+          const currentLength = countOutputCharacters(fullText)
+          const remainingLength = requestedMinLength - currentLength
+          const previousEnding = fullText.slice(-1500)
+          const continuationPrompt = [
+            '你正在续写同一篇正文。原始用户任务与补充要求仍然全部有效，不能因为进入续写阶段而忽略。',
+            userText,
+            `当前正文约 ${currentLength} 字，还差约 ${remainingLength} 字。`,
+            '严格保持已有的人物、场景、时间线、叙述视角和因果关系。从最后一句之后直接继续，不要重复前文，不要另起标题，不要重新开场。',
+            `已有正文末尾：\n${previousEnding}`,
+          ].join('\n\n')
+
+          result.value += '\n\n'
+          const continuation = await generateContent(
+            selectedModelId.value,
+            [{ text: continuationPrompt }],
+            DEFAULT_SYSTEM_INSTRUCTION,
+            provider,
+            (chunk) => {
+              result.value += chunk
+            },
+          )
+          const continuationText = removeContinuationOverlap(fullText, continuation.text || '')
+          if (!continuationText.trim())
+            break
+          const comparisonWindow = fullText.slice(-3000).replace(/\s/g, '')
+          const continuationKey = continuationText.replace(/\s/g, '')
+          if (continuationKey.length >= 20 && comparisonWindow.includes(continuationKey))
+            break
+          fullText += `\n\n${continuationText}`
+          fullText = removeConsecutiveDuplicateSentences(fullText)
+          response = continuation
+        }
+      }
+      fullText = removeConsecutiveDuplicateSentences(fullText)
       const lastImage = base64Image.value
 
       console.log(response)
-      if (response.text === '' || response.text === null || response.text === undefined) {
+      if (!fullText) {
         if ((response.candidates && response.candidates[0]?.finishReason === 'PROHIBITED_CONTENT')
           || (response as any).promptFeedback?.blockReason) {
           errorMsg.value = '内容被安全过滤器阻止，请重试或更换模型。'
@@ -241,16 +315,16 @@ export function useAnalyse() {
       }
       else {
         saveButtonDisabled.value = false
-        result.value = response.text!
+        result.value = fullText
         errorMsg.value = ''
         lastFavoriteResult.value = {
           model: selectedModelId.value,
-          mode: selectedPromptId.value,
+          mode: 'custom',
           imageHash: '',
           mimeType,
           time: Date.now(),
-          result: response.text!,
-          prompt: selectedPrompt.value?.content ?? '',
+          result: fullText,
+          prompt: selectedPromptText.value,
           additionalPrompt: additionalPrompt.value.trim(),
           _pendingBase64: lastImage,
           _sourceUrl: sourceUrl,
@@ -258,7 +332,7 @@ export function useAnalyse() {
       }
     }
     catch (error) {
-      console.error('[Analysis Error]', { provider: provider.name, error })
+      console.error('[Analysis Error]', { error })
       errorMsg.value = `Error: ${(error as Error).message || String(error)}`
     }
     finally {
@@ -302,20 +376,21 @@ export function useAnalyse() {
 
   return {
     image,
-    selectedProviderId,
+    selectedApiUrl,
+    selectedApiKey,
     selectedModelId,
-    selectedPromptId,
-    selectedProvider,
-    selectedPrompt,
+    selectedPromptText,
+    generationTemperature,
+    generationMaxTokens,
+    generationContextTokens,
+    generationRepeatPenalty,
+    autoContinueLongText,
     additionalPrompt,
     result,
     errorMsg,
     analyseButtonLoading,
     analyseButtonDisabled,
     saveButtonDisabled,
-    providerSelectOptions,
-    modelSelectOptions,
-    promptSelectOptions,
     additionalPromptPresets,
     selectedAdditionalPresetId,
     handleSelectPreset,

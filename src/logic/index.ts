@@ -87,6 +87,19 @@ function migrateOldProviders() {
 
 migrateOldProviders()
 
+if (providers.value.length === 0) {
+  providers.value = [
+    {
+      id: 'default-ollama',
+      name: 'Ollama (本地)',
+      type: 'openai',
+      apiUrl: 'http://localhost:11434',
+      apiKey: 'ollama',
+      models: ['gemma3:4b'],
+    },
+  ]
+}
+
 export function fetchModelsFromAPI(provider: ProviderConfig): Promise<string[]> {
   const { type, apiUrl, apiKey } = provider
   if (!apiKey)
@@ -148,6 +161,10 @@ function normalizeApiUrl(url: string, defaultUrl: string): string {
   return url
 }
 
+function isOllamaURL(url: string): boolean {
+  return url.includes('localhost') || url.includes('127.0.0.1') || url.includes('11434') || url.includes('ollama')
+}
+
 function buildGeminiGenerationConfig(config?: GenerationConfig): Record<string, any> {
   const genConfig: Record<string, any> = { temperature: 0.7 }
   if (!config)
@@ -173,6 +190,8 @@ function buildOpenAIGenerationConfig(config?: GenerationConfig): Record<string, 
     genConfig.max_tokens = config.maxTokens
   if (config.topP !== undefined)
     genConfig.top_p = config.topP
+  if (config.repeatPenalty !== undefined)
+    genConfig.frequency_penalty = Math.min(2, Math.max(0, (config.repeatPenalty - 1) * 2))
   return genConfig
 }
 
@@ -188,6 +207,9 @@ export async function generateContent(
 ) {
   if (provider.type === 'gemini') {
     return generateGeminiContent(model, contents, systemInstruction, provider, onChunk)
+  }
+  else if (isOllamaURL(provider.apiUrl)) {
+    return generateOllamaContent(model, contents, systemInstruction, provider, onChunk)
   }
   else {
     return generateOpenAIContent(model, contents, systemInstruction, provider, onChunk)
@@ -270,6 +292,146 @@ async function generateGeminiContent(
   }
 }
 
+// ──────────────────────────────────────────────
+// Ollama 原生 /api/chat（支持 num_predict / num_ctx）
+// ──────────────────────────────────────────────
+async function generateOllamaContent(
+  model: string,
+  contents: any,
+  systemInstruction: string,
+  provider: ProviderConfig,
+  onChunk?: (text: string) => void,
+) {
+  const baseUrl = provider.apiUrl.replace(/\/(?:v1|api\/chat|v1\/chat\/completions)\/?$/, '').replace(/\/$/, '')
+  const apiUrl = `${baseUrl}/api/chat`
+  const genConfig = provider.generationConfig
+
+  // 构建 Ollama 原生消息格式
+  const messages: any[] = []
+  if (systemInstruction)
+    messages.push({ role: 'system', content: systemInstruction })
+
+  const userImages: string[] = []
+  let userText = ''
+  for (const content of Array.isArray(contents) ? contents : [contents]) {
+    if (typeof content === 'string') {
+      userText += (userText ? '\n' : '') + content
+    }
+    else if ('text' in content && content.text) {
+      userText += (userText ? '\n' : '') + content.text
+    }
+    else if ('inlineData' in content && content.inlineData) {
+      userImages.push(content.inlineData.data)
+    }
+  }
+
+  messages.push({
+    role: 'user',
+    content: userText,
+    images: userImages.length > 0 ? userImages : undefined,
+  })
+
+  // Ollama 原生参数：放在 options 中
+  const options: Record<string, any> = {
+    temperature: 0.7,
+  }
+  if (genConfig?.numCtx !== undefined)
+    options.num_ctx = genConfig.numCtx
+  if (genConfig?.maxTokens !== undefined)
+    options.num_predict = genConfig.maxTokens
+  if (genConfig?.topP !== undefined)
+    options.top_p = genConfig.topP
+  if (genConfig?.temperature !== undefined)
+    options.temperature = genConfig.temperature
+  if (genConfig?.repeatPenalty !== undefined)
+    options.repeat_penalty = genConfig.repeatPenalty
+  if (genConfig?.repeatLastN !== undefined)
+    options.repeat_last_n = genConfig.repeatLastN
+
+  const requestBody: any = {
+    model,
+    messages,
+    stream: !!onChunk,
+    options,
+  }
+
+  console.log('[Ollama API]', JSON.stringify({ url: apiUrl, model, options, messagesCount: messages.length }, null, 2))
+
+  const response = await fetch(apiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody),
+  })
+  if (!response.ok)
+    throw new Error(`Ollama API error (${response.status}): ${await response.text()}`)
+
+  if (onChunk) {
+    // 流式
+    const reader = response.body?.getReader()
+    if (!reader)
+      throw new Error('Response body is not readable')
+    const decoder = new TextDecoder()
+    let fullText = ''
+    let buffer = ''
+    let finishReason = 'STOP'
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done)
+        break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) {
+        if (!line.trim())
+          continue
+        try {
+          const data = JSON.parse(line)
+          if (data.message?.content) {
+            fullText += data.message.content
+            onChunk(data.message.content)
+          }
+          if (data.done_reason)
+            finishReason = data.done_reason === 'length' ? 'MAX_TOKENS' : String(data.done_reason).toUpperCase()
+          if (data.error) {
+            throw new Error(data.error)
+          }
+        }
+        catch (e) {
+          if (e instanceof SyntaxError)
+            continue
+          throw e
+        }
+      }
+    }
+    // 处理剩余 buffer
+    if (buffer.trim()) {
+      try {
+        const data = JSON.parse(buffer)
+        if (data.message?.content) {
+          fullText += data.message.content
+          onChunk(data.message.content)
+        }
+        if (data.done_reason)
+          finishReason = data.done_reason === 'length' ? 'MAX_TOKENS' : String(data.done_reason).toUpperCase()
+      }
+      catch { /* skip */ }
+    }
+    return {
+      text: fullText,
+      candidates: [{ finishReason }],
+    }
+  }
+  else {
+    // 非流式
+    const data = await response.json()
+    return {
+      text: data.message?.content || '',
+      candidates: [{ finishReason: data.done_reason === 'length' ? 'MAX_TOKENS' : String(data.done_reason || 'STOP').toUpperCase() }],
+    }
+  }
+}
+
 async function generateOpenAIContent(
   model: string,
   contents: any,
@@ -283,13 +445,16 @@ async function generateOpenAIContent(
 
   const apiUrl = normalizeApiUrl(rawUrl, 'https://api.openai.com/v1/chat/completions')
   const messages = buildOpenAIMessages(contents, systemInstruction)
+  const genConfig = buildOpenAIGenerationConfig(provider.generationConfig)
+  const requestBody = { model, messages, temperature: 0.7, stream: true, ...genConfig }
+  console.log('[API Request]', JSON.stringify({ url: apiUrl, model, genConfig, messagesCount: messages.length }, null, 2))
 
   if (onChunk) {
     // SSE 流式响应
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages, temperature: 0.7, stream: true, ...buildOpenAIGenerationConfig(provider.generationConfig) }),
+      body: JSON.stringify(requestBody),
     })
     if (!response.ok)
       throw new Error(`API error (${response.status}): ${await response.text()}`)
@@ -367,10 +532,11 @@ async function generateOpenAIContent(
   }
   else {
     // 非流式
+    const nonStreamBody = { model, messages, temperature: 0.7, ...genConfig }
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages, temperature: 0.7, ...buildOpenAIGenerationConfig(provider.generationConfig) }),
+      body: JSON.stringify(nonStreamBody),
     })
     if (!response.ok)
       throw new Error(`API error (${response.status}): ${await response.text()}`)
@@ -539,8 +705,12 @@ export function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export function base64ToBytes(base64: string): Uint8Array {
-  return Uint8Array.from(atob(base64), c => c.charCodeAt(0))
+export function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++)
+    bytes[i] = binary.charCodeAt(i)
+  return bytes
 }
 
 export async function computeImageHash(base64: string): Promise<string> {

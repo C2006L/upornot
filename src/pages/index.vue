@@ -3,8 +3,8 @@ import { computed } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import Button from '~/components/Button.vue'
 import ImageUploader from '~/components/ImageUploader.vue'
+import Input from '~/components/Input.vue'
 import MarkdownRenderer from '~/components/MarkdownRenderer.vue'
-import Select from '~/components/Select.vue'
 import { useAnalyse } from '~/composables/useAnalyse'
 import { version } from '../../package.json'
 
@@ -14,18 +14,21 @@ defineOptions({
 
 const {
   image,
-  selectedProviderId,
+  selectedApiUrl,
+  selectedApiKey,
   selectedModelId,
-  selectedPromptId,
+  selectedPromptText,
+  generationTemperature,
+  generationMaxTokens,
+  generationContextTokens,
+  generationRepeatPenalty,
+  autoContinueLongText,
   additionalPrompt,
   result,
   errorMsg,
   analyseButtonLoading,
   analyseButtonDisabled,
   saveButtonDisabled,
-  providerSelectOptions,
-  modelSelectOptions,
-  promptSelectOptions,
   additionalPromptPresets,
   selectedAdditionalPresetId,
   handleSelectPreset,
@@ -74,17 +77,73 @@ onBeforeRouteLeave(() => {
   <!-- 配置区 -->
   <div mb-4 rounded-xl border="~ base" bg="white dark:black" p-6 text-left>
     <div mb-5>
-      <span label ml-0.5>供应商</span>
-      <Select v-model="selectedProviderId" :options="providerSelectOptions" />
+      <span label ml-0.5>API 地址</span>
+      <Input v-model="selectedApiUrl" type="text" placeholder="http://localhost:11434" />
+    </div>
+    <div mb-5>
+      <span label ml-0.5>API 密钥</span>
+      <Input v-model="selectedApiKey" type="text" placeholder="ollama (可留空)" />
     </div>
     <div mb-5>
       <span label ml-0.5>模型</span>
-      <Select v-model="selectedModelId" :options="modelSelectOptions" />
+      <Input v-model="selectedModelId" type="text" placeholder="gemma3:4b" />
     </div>
     <div>
       <span label ml-0.5>Prompt</span>
-      <Select v-model="selectedPromptId" :options="promptSelectOptions" />
+      <textarea
+        v-model="selectedPromptText"
+        placeholder="输入你的分析指令..."
+        rows="2"
+        w-full px-3 py-2 rounded-lg
+        border="~ base focus:teal-600"
+        bg="transparent"
+        outline="none"
+        resize-y
+        transition-colors duration-200
+      />
     </div>
+    <details mt-5>
+      <summary text-sm cursor-pointer op-70 hover:op-100>
+        高级生成设置
+      </summary>
+      <div grid="~ cols-1 sm:cols-2 gap-4" mt-4>
+        <label>
+          <span label ml-0.5>Temperature</span>
+          <input
+            v-model.number="generationTemperature" type="number" min="0" max="2" step="0.05"
+            w-full px-4 py-2 bg-transparent border="~ rounded base hover-base focus-base" outline-none
+          >
+        </label>
+        <label>
+          <span label ml-0.5>最大输出 Tokens</span>
+          <input
+            v-model.number="generationMaxTokens" type="number" min="1" step="1"
+            w-full px-4 py-2 bg-transparent border="~ rounded base hover-base focus-base" outline-none
+          >
+        </label>
+        <label>
+          <span label ml-0.5>上下文 Tokens</span>
+          <input
+            v-model.number="generationContextTokens" type="number" min="2048" step="1024"
+            w-full px-4 py-2 bg-transparent border="~ rounded base hover-base focus-base" outline-none
+          >
+        </label>
+        <label>
+          <span label ml-0.5>重复惩罚</span>
+          <input
+            v-model.number="generationRepeatPenalty" type="number" min="1" max="2" step="0.01"
+            w-full px-4 py-2 bg-transparent border="~ rounded base hover-base focus-base" outline-none
+          >
+        </label>
+      </div>
+      <label flex="~ items-center gap-2" mt-4 text-sm cursor-pointer>
+        <input v-model="autoContinueLongText" type="checkbox" accent-teal-600>
+        当 Prompt 明确要求“至少/不少于 N 字”时，长度不足自动续写（最多 3 次）
+      </label>
+      <p mt-2 text-xs op-50>
+        上下文包含 Prompt、图片和输出。重复惩罚建议保持在 1.10–1.20，过高会损害文笔。
+      </p>
+    </details>
   </div>
 
   <!-- 上传区 -->

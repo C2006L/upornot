@@ -3,8 +3,11 @@ export type APIProviderType = 'gemini' | 'openai'
 export interface GenerationConfig {
   temperature?: number
   maxTokens?: number
+  numCtx?: number
   topP?: number
   topK?: number
+  repeatPenalty?: number
+  repeatLastN?: number
 }
 
 export interface ProviderConfig {
