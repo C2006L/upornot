@@ -19,11 +19,14 @@ const {
   generationTemperature,
   generationMaxTokens,
   generationContextTokens,
+  generationTargetLength,
   generationRepeatPenalty,
   autoContinueLongText,
+  enhancedWritingFlow,
   additionalPrompt,
   result,
   errorMsg,
+  generationStage,
   analyseButtonLoading,
   analyseButtonDisabled,
   saveButtonDisabled,
@@ -117,11 +120,19 @@ onBeforeRouteLeave(() => {
           <label><span label>重复惩罚</span><input v-model.number="generationRepeatPenalty" app-field type="number" min="1" max="2" step="0.01"></label>
           <label><span label>最大输出</span><input v-model.number="generationMaxTokens" app-field type="number" min="1" step="1"></label>
           <label><span label>上下文</span><input v-model.number="generationContextTokens" app-field type="number" min="2048" step="1024"></label>
+          <label col-span-2><span label>目标字数（0 = 从 Prompt 自动识别）</span><input v-model.number="generationTargetLength" app-field type="number" min="0" max="30000" step="100"></label>
         </div>
         <label mt-4 flex="~ items-start gap-3" text-xs leading-relaxed cursor-pointer text-slate-500 dark:text-slate-400>
           <input v-model="autoContinueLongText" type="checkbox" mt-0.5 accent-teal-600>
-          <span>识别“至少/不少于 N 字”并自动续写，最多进行 3 轮。</span>
+          <span>识别“至少/不少于 N 字”并自动分段续写，必要时最多进行 8 轮。</span>
         </label>
+        <label mt-3 flex="~ items-start gap-3" text-xs leading-relaxed cursor-pointer text-slate-500 dark:text-slate-400>
+          <input v-model="enhancedWritingFlow" type="checkbox" mt-0.5 accent-teal-600>
+          <span><strong text-slate-700 dark:text-slate-200>增强创作流程</strong>：先识图规划，再分段写作，并在末段前检查遗漏。逻辑更稳，但会增加等待时间。</span>
+        </label>
+        <p v-if="generationContextTokens < 12288 && enhancedWritingFlow" mt-3 text-xs leading-relaxed text-amber-600 dark:text-amber-300>
+          当前上下文为 {{ generationContextTokens }}。复杂长文在显存允许时建议设为 12288–16384，避免后段遗忘设定。
+        </p>
       </details>
     </section>
 
@@ -206,7 +217,7 @@ onBeforeRouteLeave(() => {
           <span w-2.5 h-2.5 rounded-full bg-teal-500 class="pulse-dot" />准备开始生成
         </div>
         <p text-xs mt-1 text-slate-500 dark:text-slate-400>
-          生成过程中请保持页面打开；长文可能自动进行多轮续写。
+          {{ analyseButtonLoading && generationStage ? generationStage : '生成过程中请保持页面打开；长文可能自动进行多轮续写。' }}
         </p>
       </div>
       <div w-full sm:w-72>
