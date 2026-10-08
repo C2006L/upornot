@@ -45,7 +45,7 @@ function buildPlanningPrompt(taskContract: string): string {
     '必须逐项输出以下栏目：',
     '1. 图片可见事实：人物数量、外观、服装、姿势、物品、环境；不确定的内容明确标为不确定，禁止把猜测写成事实。',
     '2. 固定设定：人物称谓、身份关系、叙述视角、时间、地点以及全文不得改变的状态。',
-    '3. 情节推进：按因果顺序列出 6 至 10 个连续节点，每个节点说明如何自然过渡到下一节点。',
+    '3. 情节推进：按因果顺序列出 6 至 10 个互不重复的连续节点，每个节点必须带来新的信息、动作或状态变化，并说明如何自然过渡到下一节点；禁止循环回到已经完成的场面。',
     '4. 要求清单：提取用户的每一项明确要求、禁止事项、格式和篇幅要求，不得合并遗漏。',
     '5. 一致性风险：列出容易出现的称谓混乱、动作跳跃、物品凭空出现、状态复原和内容重复问题。',
     '控制在 1600 字以内，只输出蓝图，不写正文。',
@@ -67,10 +67,10 @@ function buildSegmentPrompt(options: {
   segmentCount: number
   targetLength: number
   existingLength: number
-  previousEnding: string
+  completedDraft: string
   reviewNotes?: string
 }): string {
-  const { taskContract, plan, segmentIndex, segmentCount, targetLength, existingLength, previousEnding, reviewNotes } = options
+  const { taskContract, plan, segmentIndex, segmentCount, targetLength, existingLength, completedDraft, reviewNotes } = options
   const isFirst = segmentIndex === 1
   const isLast = segmentIndex === segmentCount
   const instructions = [
@@ -78,11 +78,12 @@ function buildSegmentPrompt(options: {
     `当前正文已有约 ${existingLength} 字。必须沿写作蓝图的顺序推进，并覆盖与本部分进度对应的情节点和要求。`,
     isFirst
       ? '从正文开场直接写起，先稳定人物称谓、空间关系与叙述视角；不要输出标题、提纲或说明。'
-      : '从已有正文最后一句之后直接续写；不要重新开场、回顾前文、复述已经发生的动作或重复相同句式。',
+      : '先在内部对照蓝图确认哪些节点已经完成，然后只写尚未完成的后续节点。从已有正文最后一句之后直接续写；不要重新开场、回顾前文、复述已经发生的对话、动作、感受或场面，也不要只是替换同义词重复表达。',
     isLast
       ? '这是最后一个计划段：优先补齐尚未完成的要求，完成主要因果链后自然收束，不要在结尾复述提示词或罗列设定。'
       : '这不是结尾：推进新的有效情节并为下一部分留下自然承接点，不要总结、收尾或提前结束。',
-    '只输出可以直接拼接到已有内容之后的正文。每个动作必须有发起者、承受者和自然过渡，代词指向必须清楚。',
+    '本部分至少推进两个新的信息、动作或因果节点，使人物位置、关系、目标或场景状态发生可辨认的变化。相同动作只有在原始任务明确要求时才可再次出现，而且必须具有新的原因、过程和结果。',
+    '只输出可以直接拼接到已有内容之后的正文。每个动作必须有发起者、承受者和自然过渡，代词指向必须清楚；禁止复制“已完成正文”中的句子。',
   ]
   if (reviewNotes)
     instructions.push(`审稿发现的待补事项如下，最后一段必须自然完成，不能写成清单：\n${reviewNotes}`)
@@ -92,7 +93,7 @@ function buildSegmentPrompt(options: {
     taskContract,
     '## 内部写作蓝图',
     plan,
-    ...(previousEnding ? ['## 已有正文末尾', previousEnding] : []),
+    ...(completedDraft ? ['## 已完成正文（这是已经发生且不可重写的历史，只能向后承接）', completedDraft] : []),
     '## 本轮写作指令',
     ...instructions,
   ].join('\n\n')
@@ -122,6 +123,22 @@ function withGenerationConfig(provider: ProviderConfig, overrides: ProviderConfi
   }
 }
 
+function buildContinuityContext(text: string, contextTokens: number): string {
+  const maxCharacters = Math.max(2200, Math.min(7000, Math.floor(contextTokens * 0.42)))
+  if (text.length <= maxCharacters)
+    return text
+
+  const openingLength = Math.min(900, Math.floor(maxCharacters * 0.2))
+  const endingLength = maxCharacters - openingLength
+  return [
+    '【开头固定设定】',
+    text.slice(0, openingLength),
+    '【中段内容已经完成，此处因上下文容量省略；不得回到或复演中段情节】',
+    '【最近正文】',
+    text.slice(-endingLength),
+  ].join('\n')
+}
+
 function removeContinuationOverlap(existingText: string, continuationText: string): string {
   const maxOverlap = Math.min(existingText.length, continuationText.length, 2000)
   for (let length = maxOverlap; length >= 12; length--) {
@@ -131,21 +148,79 @@ function removeContinuationOverlap(existingText: string, continuationText: strin
   return continuationText
 }
 
-function removeConsecutiveDuplicateSentences(text: string): string {
-  const sentences = text.match(/[^。！？!?]*[。！？!?]+|[^。！？!?]+$/g)
-  if (!sentences)
-    return text
+function normalizeForComparison(text: string): string {
+  return text.toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '')
+}
 
-  const result: string[] = []
-  let previousKey = ''
-  for (const sentence of sentences) {
-    const key = sentence.replace(/\s/g, '').trim()
-    if (key.length >= 8 && key === previousKey)
-      continue
-    result.push(sentence)
-    previousKey = key
+function getNgramSimilarity(left: string, right: string, size = 3): number {
+  const a = normalizeForComparison(left)
+  const b = normalizeForComparison(right)
+  if (!a || !b)
+    return 0
+  if (a === b)
+    return 1
+  if (Math.min(a.length, b.length) >= 16 && (a.includes(b) || b.includes(a)))
+    return Math.min(a.length, b.length) / Math.max(a.length, b.length)
+  if (a.length < size || b.length < size)
+    return 0
+
+  const aGrams = new Set<string>()
+  const bGrams = new Set<string>()
+  for (let i = 0; i <= a.length - size; i++)
+    aGrams.add(a.slice(i, i + size))
+  for (let i = 0; i <= b.length - size; i++)
+    bGrams.add(b.slice(i, i + size))
+  let overlap = 0
+  for (const gram of aGrams) {
+    if (bGrams.has(gram))
+      overlap++
   }
-  return result.join('')
+  return (2 * overlap) / (aGrams.size + bGrams.size)
+}
+
+function removeRepeatedPassages(text: string): string {
+  const acceptedSentences: string[] = []
+  const acceptedParagraphs: string[] = []
+  const seenSentenceKeys = new Set<string>()
+  const seenParagraphKeys = new Set<string>()
+  const cleanedParagraphs: string[] = []
+
+  for (const paragraph of text.split(/\n{2,}/)) {
+    const sentences = paragraph.match(/[^。！？!?]*[。！？!?]+|[^。！？!?]+$/g) || [paragraph]
+    const uniqueSentences: string[] = []
+    for (const sentence of sentences) {
+      const normalized = normalizeForComparison(sentence)
+      const isDuplicate = normalized.length >= 18 && (
+        seenSentenceKeys.has(normalized)
+        || acceptedSentences.slice(-240).some(previous => getNgramSimilarity(sentence, previous) >= 0.9)
+      )
+      if (isDuplicate)
+        continue
+      uniqueSentences.push(sentence)
+      if (normalized.length >= 18) {
+        acceptedSentences.push(sentence)
+        seenSentenceKeys.add(normalized)
+      }
+    }
+
+    const cleanedParagraph = uniqueSentences.join('').trim()
+    if (!cleanedParagraph)
+      continue
+    const normalizedParagraph = normalizeForComparison(cleanedParagraph)
+    const isDuplicateParagraph = normalizedParagraph.length >= 60 && (
+      seenParagraphKeys.has(normalizedParagraph)
+      || acceptedParagraphs.slice(-80).some(previous => getNgramSimilarity(cleanedParagraph, previous, 4) >= 0.84)
+    )
+    if (isDuplicateParagraph)
+      continue
+    cleanedParagraphs.push(cleanedParagraph)
+    if (normalizedParagraph.length >= 60) {
+      acceptedParagraphs.push(cleanedParagraph)
+      seenParagraphKeys.add(normalizedParagraph)
+    }
+  }
+
+  return cleanedParagraphs.join('\n\n')
 }
 
 export function useAnalyse() {
@@ -347,7 +422,7 @@ export function useAnalyse() {
           maxTokens: generationMaxTokens.value,
           numCtx: generationContextTokens.value,
           repeatPenalty: generationRepeatPenalty.value,
-          repeatLastN: 512,
+          repeatLastN: Math.min(generationContextTokens.value, 2048),
         },
       }
       let response: Awaited<ReturnType<typeof generateContent>>
@@ -403,7 +478,7 @@ export function useAnalyse() {
             segmentCount,
             targetLength: segmentTarget,
             existingLength: currentLength,
-            previousEnding: fullText.slice(-1800),
+            completedDraft: buildContinuityContext(fullText, generationContextTokens.value),
             reviewNotes: segmentIndex === segmentCount ? reviewNotes : undefined,
           })
           const segmentProvider = withGenerationConfig(provider, {
@@ -429,7 +504,7 @@ export function useAnalyse() {
           const segmentKey = segmentText.replace(/\s/g, '')
           if (segmentKey.length >= 20 && comparisonWindow.includes(segmentKey))
             break
-          fullText = removeConsecutiveDuplicateSentences(`${fullText}${fullText ? '\n\n' : ''}${segmentText}`)
+          fullText = removeRepeatedPassages(`${fullText}${fullText ? '\n\n' : ''}${segmentText}`)
         }
 
         if (autoContinueLongText.value && requestedMinLength) {
@@ -450,7 +525,7 @@ export function useAnalyse() {
                   segmentCount: round + 1,
                   targetLength: Math.max(700, remainingLength + 150),
                   existingLength: currentLength,
-                  previousEnding: fullText.slice(-1800),
+                  completedDraft: buildContinuityContext(fullText, generationContextTokens.value),
                 }),
               }],
               DEFAULT_SYSTEM_INSTRUCTION,
@@ -466,7 +541,7 @@ export function useAnalyse() {
             const continuationKey = continuationText.replace(/\s/g, '')
             if (continuationKey.length >= 20 && comparisonWindow.includes(continuationKey))
               break
-            fullText = removeConsecutiveDuplicateSentences(`${fullText}\n\n${continuationText}`)
+            fullText = removeRepeatedPassages(`${fullText}\n\n${continuationText}`)
           }
         }
       }
@@ -485,7 +560,7 @@ export function useAnalyse() {
             result.value += chunk
           },
         )
-        fullText = removeConsecutiveDuplicateSentences(response.text || '')
+        fullText = removeRepeatedPassages(response.text || '')
 
         if (autoContinueLongText.value && requestedMinLength) {
           for (let round = 0; round < MAX_CONTINUATION_ROUNDS && countOutputCharacters(fullText) < requestedMinLength; round++) {
@@ -497,7 +572,7 @@ export function useAnalyse() {
               userText,
               `当前正文约 ${currentLength} 字，还差约 ${remainingLength} 字。`,
               '保持已有的人物称谓、场景、时间线、叙述视角、物品状态和因果关系。从最后一句之后直接继续，不要重复前文、重新开场或另起标题。',
-              `已有正文末尾：\n${fullText.slice(-1800)}`,
+              `已完成正文（只能承接，严禁复述）：\n${buildContinuityContext(fullText, generationContextTokens.value)}`,
             ].join('\n\n')
 
             result.value += '\n\n'
@@ -517,12 +592,12 @@ export function useAnalyse() {
             const continuationKey = continuationText.replace(/\s/g, '')
             if (continuationKey.length >= 20 && comparisonWindow.includes(continuationKey))
               break
-            fullText = removeConsecutiveDuplicateSentences(`${fullText}\n\n${continuationText}`)
+            fullText = removeRepeatedPassages(`${fullText}\n\n${continuationText}`)
           }
         }
       }
 
-      fullText = removeConsecutiveDuplicateSentences(fullText)
+      fullText = removeRepeatedPassages(fullText)
       const lastImage = base64Image.value
 
       console.log(response)
