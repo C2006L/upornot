@@ -5,8 +5,7 @@ import { addAdditionalPreset, additionalPromptPresets, computeStringHash, favori
 
 const DEFAULT_SYSTEM_INSTRUCTION = '你是一个图像理解与长文写作助手。用户要求的优先级最高。请严格遵循任务、人物设定、称谓、叙述视角、事件顺序、格式、语言和篇幅，不得擅自简化或遗漏。写作时保持物理动作、空间位置、服装状态和前后因果连续。'
 const PLANNING_SYSTEM_INSTRUCTION = '你是长文编辑与视觉分析助手。你的工作是把图片事实和用户要求整理成可执行的写作蓝图，不创作正文，不删减用户要求，不输出与任务无关的说明。'
-const CONTINUITY_SYSTEM_INSTRUCTION = '你是严格的小说连续性编辑。你只整理已完成正文的事实、已完成和未完成的情节节点、以及不可再重复的内容；不得续写正文，不得添加原文没有的新设定。'
-const MAX_CONTINUATION_ROUNDS = 8
+const MAX_CONTINUATION_ROUNDS = 5
 const TARGET_SEGMENT_LENGTH = 1100
 const MAX_PLANNED_SEGMENTS = 6
 
@@ -95,9 +94,8 @@ function buildSegmentPrompt(options: {
   existingLength: number
   completedDraft: string
   hardRequirements: string
-  continuityLedger?: string
 }): string {
-  const { taskContract, plan, segmentIndex, segmentCount, targetLength, existingLength, completedDraft, hardRequirements, continuityLedger } = options
+  const { taskContract, plan, segmentIndex, segmentCount, targetLength, existingLength, completedDraft, hardRequirements } = options
   const isFirst = segmentIndex === 1
   const isLast = segmentIndex === segmentCount
   const instructions = [
@@ -117,35 +115,12 @@ function buildSegmentPrompt(options: {
     taskContract,
     '## 内部写作蓝图',
     plan,
-    ...(continuityLedger ? ['## 连续性账本（视为不可篡改的已知事实；只推进其中标明的未完成节点）', continuityLedger] : []),
     ...(completedDraft ? ['## 已完成正文（这是已经发生且不可重写的历史，只能向后承接）', completedDraft] : []),
     '## 本轮写作指令',
     ...instructions,
     ...(hardRequirements
       ? ['## 最终硬约束核对（开始输出前在内部逐条确认；不得遗漏或复述为说明）', hardRequirements]
       : []),
-  ].join('\n\n')
-}
-
-function buildContinuityLedgerPrompt(taskContract: string, plan: string, draft: string, hardRequirements: string, mandatoryTerms: string[], contextTokens: number): string {
-  const missingTerms = mandatoryTerms.filter(term => !draft.includes(term))
-  return [
-    '请为下一段写作整理连续性账本，控制在 500 字以内，只输出账本，不写正文。',
-    '必须包含：',
-    '1. 不可改变的称谓、人物关系、视角、地点、服装/物品和当前状态。',
-    '2. 已完成的情节节点：只列事实，不重复描述。',
-    '3. 下一段唯一应推进的 1 至 3 个蓝图节点。',
-    '4. 禁止重复的场面、动作、对话或情绪。',
-    '5. 尚未满足的硬约束和指定词汇。',
-    '不得创造正文中没有的新人物、新地点、新物品、新背景或新转折。',
-    '## 原始任务协议',
-    taskContract,
-    '## 写作蓝图',
-    plan,
-    '## 已有正文',
-    buildContinuityContext(draft, contextTokens),
-    ...(hardRequirements ? ['## 硬约束', hardRequirements] : []),
-    ...(missingTerms.length > 0 ? [`## 当前尚未出现的指定词汇\n${missingTerms.join('、')}`] : []),
   ].join('\n\n')
 }
 
@@ -483,7 +458,7 @@ export function useAnalyse() {
           maxTokens: generationMaxTokens.value,
           numCtx: generationContextTokens.value,
           repeatPenalty: generationRepeatPenalty.value,
-          repeatLastN: Math.min(generationContextTokens.value, 2048),
+          repeatLastN: Math.min(generationContextTokens.value, 1024),
         },
       }
       let response: Awaited<ReturnType<typeof generateContent>>
@@ -512,25 +487,13 @@ export function useAnalyse() {
         const segmentCount = autoContinueLongText.value
           ? getPlannedSegmentCount(requestedMinLength)
           : 1
-        let continuityLedger = ''
         response = planResponse
 
         for (let segmentIndex = 1; segmentIndex <= segmentCount; segmentIndex++) {
-          if (segmentIndex > 1 && fullText) {
-            generationStage.value = '正在整理前文连续性…'
-            const ledgerResponse = await generateContent(
-              selectedModelId.value,
-              [{ text: buildContinuityLedgerPrompt(planningSource, writingPlan, fullText, hardRequirements, mandatoryTermList, generationContextTokens.value) }],
-              CONTINUITY_SYSTEM_INSTRUCTION,
-              withGenerationConfig(provider, { temperature: 0.15, maxTokens: Math.min(generationMaxTokens.value, 700) }),
-            )
-            continuityLedger = ledgerResponse.text.trim()
-          }
-
           const currentLength = countOutputCharacters(fullText)
           const remainingSegments = segmentCount - segmentIndex + 1
           const remainingLength = Math.max(0, (requestedMinLength || TARGET_SEGMENT_LENGTH) - currentLength)
-          const segmentTarget = Math.max(700, Math.ceil(remainingLength / remainingSegments) + 120)
+          const segmentTarget = Math.max(950, Math.ceil(remainingLength / remainingSegments) + 300)
           const segmentPrompt = buildSegmentPrompt({
             taskContract: userText,
             plan: writingPlan,
@@ -540,7 +503,6 @@ export function useAnalyse() {
             existingLength: currentLength,
             completedDraft: buildContinuityContext(fullText, generationContextTokens.value),
             hardRequirements,
-            continuityLedger,
           })
           const segmentProvider = withGenerationConfig(provider, {
             maxTokens: Math.min(generationMaxTokens.value, Math.max(2048, Math.ceil(segmentTarget * 2.2))),
@@ -567,54 +529,6 @@ export function useAnalyse() {
           if (segmentKey.length >= 20 && comparisonWindow.includes(segmentKey))
             break
           fullText = removeRepeatedPassages(`${fullText}${fullText ? '\n\n' : ''}${segmentText}`)
-        }
-
-        if (autoContinueLongText.value && requestedMinLength) {
-          for (let round = segmentCount; round < MAX_CONTINUATION_ROUNDS; round++) {
-            const currentLength = countOutputCharacters(fullText)
-            if (currentLength >= requestedMinLength)
-              break
-            const remainingLength = requestedMinLength - currentLength
-            generationStage.value = '正在整理前文连续性…'
-            const ledgerResponse = await generateContent(
-              selectedModelId.value,
-              [{ text: buildContinuityLedgerPrompt(planningSource, writingPlan, fullText, hardRequirements, mandatoryTermList, generationContextTokens.value) }],
-              CONTINUITY_SYSTEM_INSTRUCTION,
-              withGenerationConfig(provider, { temperature: 0.15, maxTokens: Math.min(generationMaxTokens.value, 700) }),
-            )
-            continuityLedger = ledgerResponse.text.trim()
-            generationStage.value = `正在补足篇幅（约 ${currentLength}/${requestedMinLength} 字）…`
-            result.value += '\n\n'
-            response = await generateContent(
-              selectedModelId.value,
-              [{
-                text: buildSegmentPrompt({
-                  taskContract: userText,
-                  plan: writingPlan,
-                  segmentIndex: round + 1,
-                  segmentCount: round + 1,
-                  targetLength: Math.max(700, remainingLength + 150),
-                  existingLength: currentLength,
-                  completedDraft: buildContinuityContext(fullText, generationContextTokens.value),
-                  hardRequirements,
-                  continuityLedger,
-                }),
-              }],
-              DEFAULT_SYSTEM_INSTRUCTION,
-              withGenerationConfig(provider, { temperature: Math.min(generationTemperature.value, 0.55) }),
-              (chunk) => {
-                result.value += chunk
-              },
-            )
-            const continuationText = removeContinuationOverlap(fullText, response.text || '')
-            if (!continuationText.trim())
-              break
-            const comparisonWindow = fullText.slice(-5000).replace(/\s/g, '')
-            const continuationKey = continuationText.replace(/\s/g, '')
-            if (continuationKey.length >= 20 && comparisonWindow.includes(continuationKey))
-              break
-            fullText = removeRepeatedPassages(`${fullText}\n\n${continuationText}`)
-          }
         }
       }
       else {
@@ -672,8 +586,12 @@ export function useAnalyse() {
 
       fullText = removeRepeatedPassages(fullText)
       const missingMandatoryTerms = getMissingMandatoryTerms(fullText, mandatoryTermList)
+      const resultWarnings: string[] = []
+      if (requestedMinLength && countOutputCharacters(fullText) < requestedMinLength)
+        resultWarnings.push(`正文约 ${countOutputCharacters(fullText)} 字，未达到目标 ${requestedMinLength} 字。为避免在已收束后强行续写而破坏结尾，程序没有继续追加新剧情。`)
       if (missingMandatoryTerms.length > 0)
-        resultWarningMsg.value = `以下指定词汇未被模型写入：${missingMandatoryTerms.join('、')}。这通常表示模型忽略了要求或受自身训练限制。`
+        resultWarnings.push(`以下指定词汇未被模型写入：${missingMandatoryTerms.join('、')}。这通常表示模型忽略了要求或受自身训练限制。`)
+      resultWarningMsg.value = resultWarnings.join('\n')
       const lastImage = base64Image.value
 
       console.log(response)

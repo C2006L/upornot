@@ -127,11 +127,11 @@ onBeforeRouteLeave(() => {
         </div>
         <label mt-4 flex="~ items-start gap-3" text-xs leading-relaxed cursor-pointer text-slate-500 dark:text-slate-400>
           <input v-model="autoContinueLongText" type="checkbox" mt-0.5 accent-teal-600>
-          <span>识别“至少/不少于 N 字”并自动分段续写，必要时最多进行 8 轮。</span>
+          <span>识别“至少/不少于 N 字”并预先规划分段；正文收束后不再强行追加，避免破坏结尾。</span>
         </label>
         <label mt-3 flex="~ items-start gap-3" text-xs leading-relaxed cursor-pointer text-slate-500 dark:text-slate-400>
           <input v-model="enhancedWritingFlow" type="checkbox" mt-0.5 accent-teal-600>
-          <span><strong text-slate-700 dark:text-slate-200>增强创作流程</strong>：先识图规划，再分段写作，并在末段前检查遗漏。逻辑更稳，但会增加等待时间。</span>
+          <span><strong text-slate-700 dark:text-slate-200>增强创作流程</strong>：先识图规划，再分段写作。逻辑更稳，但会增加等待时间。</span>
         </label>
         <p v-if="generationContextTokens < 12288 && enhancedWritingFlow" mt-3 text-xs leading-relaxed text-amber-600 dark:text-amber-300>
           当前上下文为 {{ generationContextTokens }}。复杂长文在显存允许时建议设为 12288–16384，避免后段遗忘设定。
