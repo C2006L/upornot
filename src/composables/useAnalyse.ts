@@ -5,7 +5,7 @@ import { addAdditionalPreset, additionalPromptPresets, computeStringHash, favori
 
 const DEFAULT_SYSTEM_INSTRUCTION = '你是一个图像理解与长文写作助手。用户要求的优先级最高。请严格遵循任务、人物设定、称谓、叙述视角、事件顺序、格式、语言和篇幅，不得擅自简化或遗漏。写作时保持物理动作、空间位置、服装状态和前后因果连续。'
 const PLANNING_SYSTEM_INSTRUCTION = '你是长文编辑与视觉分析助手。你的工作是把图片事实和用户要求整理成可执行的写作蓝图，不创作正文，不删减用户要求，不输出与任务无关的说明。'
-const REVIEW_SYSTEM_INSTRUCTION = '你是严格的长文审稿助手。只检查正文对用户要求和写作蓝图的完成情况，指出尚未覆盖或前后不一致的事项，不改写正文。'
+const CONTINUITY_SYSTEM_INSTRUCTION = '你是严格的小说连续性编辑。你只整理已完成正文的事实、已完成和未完成的情节节点、以及不可再重复的内容；不得续写正文，不得添加原文没有的新设定。'
 const MAX_CONTINUATION_ROUNDS = 8
 const TARGET_SEGMENT_LENGTH = 1100
 const MAX_PLANNED_SEGMENTS = 6
@@ -39,14 +39,29 @@ function buildTaskContract(taskPrompt: string, additionalPrompt: string, request
   return sections.join('\n\n')
 }
 
-function buildHardRequirements(additionalPrompt: string): string {
-  if (!additionalPrompt)
-    return ''
-  return [
-    '以下内容是用户已经确认的补充事实与不可违反要求，优先级高于图片中的不确定推断。',
-    '必须逐条落实到正文；不能忽略、淡化、替换，也不能把它们原样列成清单或解释给读者。',
-    additionalPrompt,
-  ].join('\n')
+function parseMandatoryTerms(input: string): string[] {
+  return [...new Set(input
+    .split(/[\n,，、;；]/)
+    .map(term => term.trim())
+    .filter(term => term.length > 0 && term.length <= 40))].slice(0, 12)
+}
+
+function buildHardRequirements(additionalPrompt: string, mandatoryTerms: string[]): string {
+  const sections: string[] = []
+  if (additionalPrompt) {
+    sections.push(
+      '以下内容是用户已经确认的补充事实与不可违反要求，优先级高于图片中的不确定推断。',
+      '必须逐条落实到正文；不能忽略、淡化、替换，也不能把它们原样列成清单或解释给读者。',
+      additionalPrompt,
+    )
+  }
+  if (mandatoryTerms.length > 0) {
+    sections.push(
+      `以下指定词汇必须在最终正文中以完全相同的形式自然出现，每个至少一次：${mandatoryTerms.join('、')}。`,
+      '若其中某个词与其他要求冲突，优先保持原始任务与安全边界，并在复核阶段标记为未完成。',
+    )
+  }
+  return sections.join('\n')
 }
 
 function buildPlanningPrompt(taskContract: string, hardRequirements: string): string {
@@ -80,9 +95,9 @@ function buildSegmentPrompt(options: {
   existingLength: number
   completedDraft: string
   hardRequirements: string
-  reviewNotes?: string
+  continuityLedger?: string
 }): string {
-  const { taskContract, plan, segmentIndex, segmentCount, targetLength, existingLength, completedDraft, hardRequirements, reviewNotes } = options
+  const { taskContract, plan, segmentIndex, segmentCount, targetLength, existingLength, completedDraft, hardRequirements, continuityLedger } = options
   const isFirst = segmentIndex === 1
   const isLast = segmentIndex === segmentCount
   const instructions = [
@@ -92,19 +107,17 @@ function buildSegmentPrompt(options: {
       ? '从正文开场直接写起，先稳定人物称谓、空间关系与叙述视角；不要输出标题、提纲或说明。'
       : '先在内部对照蓝图确认哪些节点已经完成，然后只写尚未完成的后续节点。从已有正文最后一句之后直接续写；不要重新开场、回顾前文、复述已经发生的对话、动作、感受或场面，也不要只是替换同义词重复表达。',
     isLast
-      ? '这是最后一个计划段：优先补齐尚未完成的要求，完成主要因果链后自然收束，不要在结尾复述提示词或罗列设定。'
+      ? '这是最后一个计划段：只解决连续性账本中尚未完成的既有节点，再自然收束。禁止在结尾引入新人物、新地点、新道具、新背景、新冲突或反转；不要复述提示词或罗列设定。'
       : '这不是结尾：推进新的有效情节并为下一部分留下自然承接点，不要总结、收尾或提前结束。',
     '本部分至少推进两个新的信息、动作或因果节点，使人物位置、关系、目标或场景状态发生可辨认的变化。相同动作只有在原始任务明确要求时才可再次出现，而且必须具有新的原因、过程和结果。',
     '只输出可以直接拼接到已有内容之后的正文。每个动作必须有发起者、承受者和自然过渡，代词指向必须清楚；禁止复制“已完成正文”中的句子。',
   ]
-  if (reviewNotes)
-    instructions.push(`审稿发现的待补事项如下，最后一段必须自然完成，不能写成清单：\n${reviewNotes}`)
-
   return [
     '## 原始任务协议',
     taskContract,
     '## 内部写作蓝图',
     plan,
+    ...(continuityLedger ? ['## 连续性账本（视为不可篡改的已知事实；只推进其中标明的未完成节点）', continuityLedger] : []),
     ...(completedDraft ? ['## 已完成正文（这是已经发生且不可重写的历史，只能向后承接）', completedDraft] : []),
     '## 本轮写作指令',
     ...instructions,
@@ -114,19 +127,30 @@ function buildSegmentPrompt(options: {
   ].join('\n\n')
 }
 
-function buildReviewPrompt(taskContract: string, plan: string, draft: string, hardRequirements: string): string {
+function buildContinuityLedgerPrompt(taskContract: string, plan: string, draft: string, hardRequirements: string, mandatoryTerms: string[], contextTokens: number): string {
+  const missingTerms = mandatoryTerms.filter(term => !draft.includes(term))
   return [
-    '请对照原始任务和写作蓝图审查当前正文。',
-    '只列出最后一部分必须补齐的内容：遗漏要求、尚未完成的情节节点、称谓或视角错误、动作和状态矛盾。',
-    '已经完成的内容不要重复评价。若没有缺项，只输出“无”。控制在 600 字以内。',
+    '请为下一段写作整理连续性账本，控制在 500 字以内，只输出账本，不写正文。',
+    '必须包含：',
+    '1. 不可改变的称谓、人物关系、视角、地点、服装/物品和当前状态。',
+    '2. 已完成的情节节点：只列事实，不重复描述。',
+    '3. 下一段唯一应推进的 1 至 3 个蓝图节点。',
+    '4. 禁止重复的场面、动作、对话或情绪。',
+    '5. 尚未满足的硬约束和指定词汇。',
+    '不得创造正文中没有的新人物、新地点、新物品、新背景或新转折。',
     '## 原始任务协议',
     taskContract,
-    '## 内部写作蓝图',
+    '## 写作蓝图',
     plan,
-    '## 当前正文',
-    draft.slice(-10000),
-    ...(hardRequirements ? ['## 最高优先级补充要求（必须逐条检查）', hardRequirements] : []),
+    '## 已有正文',
+    buildContinuityContext(draft, contextTokens),
+    ...(hardRequirements ? ['## 硬约束', hardRequirements] : []),
+    ...(missingTerms.length > 0 ? [`## 当前尚未出现的指定词汇\n${missingTerms.join('、')}`] : []),
   ].join('\n\n')
+}
+
+function getMissingMandatoryTerms(text: string, mandatoryTerms: string[]): string[] {
+  return mandatoryTerms.filter(term => !text.includes(term))
 }
 
 function withGenerationConfig(provider: ProviderConfig, overrides: ProviderConfig['generationConfig']): ProviderConfig {
@@ -255,9 +279,11 @@ export function useAnalyse() {
   const autoContinueLongText = useStorage<boolean>('auto-continue-long-text', true)
   const enhancedWritingFlow = useStorage<boolean>('enhanced-writing-flow', true)
   const additionalPrompt = ref('')
+  const mandatoryTerms = useStorage<string>('mandatory-terms', '')
   const result = ref('')
   const errorMsg = ref('')
   const saveErrorMsg = ref('')
+  const resultWarningMsg = ref('')
   const generationStage = ref('')
   const analyseButtonLoading = ref(false)
   const saveButtonDisabled = ref(false)
@@ -414,17 +440,19 @@ export function useAnalyse() {
     analyseButtonLoading.value = true
     errorMsg.value = ''
     saveErrorMsg.value = ''
+    resultWarningMsg.value = ''
     result.value = ''
     generationStage.value = '正在准备图片…'
 
     try {
       const taskPrompt = selectedPromptText.value.trim()
       const additionalTaskPrompt = additionalPrompt.value.trim()
+      const mandatoryTermList = parseMandatoryTerms(mandatoryTerms.value)
       const requestedMinLength = generationTargetLength.value > 0
         ? Math.floor(generationTargetLength.value)
         : getRequestedMinLength(taskPrompt)
       const userText = buildTaskContract(taskPrompt, additionalTaskPrompt, requestedMinLength)
-      const hardRequirements = buildHardRequirements(additionalTaskPrompt)
+      const hardRequirements = buildHardRequirements(additionalTaskPrompt, mandatoryTermList)
       const planningSource = [
         `## 用户任务\n${taskPrompt}`,
         ...(additionalTaskPrompt ? [`## 用户补充要求\n${additionalTaskPrompt}`] : []),
@@ -484,20 +512,19 @@ export function useAnalyse() {
         const segmentCount = autoContinueLongText.value
           ? getPlannedSegmentCount(requestedMinLength)
           : 1
-        let reviewNotes = ''
+        let continuityLedger = ''
         response = planResponse
 
         for (let segmentIndex = 1; segmentIndex <= segmentCount; segmentIndex++) {
-          if (segmentIndex === segmentCount && segmentCount > 1 && fullText) {
-            generationStage.value = '正在对照要求检查缺项…'
-            const reviewResponse = await generateContent(
+          if (segmentIndex > 1 && fullText) {
+            generationStage.value = '正在整理前文连续性…'
+            const ledgerResponse = await generateContent(
               selectedModelId.value,
-              [{ text: buildReviewPrompt(planningSource, writingPlan, fullText, hardRequirements) }],
-              REVIEW_SYSTEM_INSTRUCTION,
-              withGenerationConfig(provider, { temperature: 0.2, maxTokens: Math.min(generationMaxTokens.value, 900) }),
+              [{ text: buildContinuityLedgerPrompt(planningSource, writingPlan, fullText, hardRequirements, mandatoryTermList, generationContextTokens.value) }],
+              CONTINUITY_SYSTEM_INSTRUCTION,
+              withGenerationConfig(provider, { temperature: 0.15, maxTokens: Math.min(generationMaxTokens.value, 700) }),
             )
-            if (reviewResponse.text.trim() !== '无')
-              reviewNotes = reviewResponse.text.trim()
+            continuityLedger = ledgerResponse.text.trim()
           }
 
           const currentLength = countOutputCharacters(fullText)
@@ -513,10 +540,11 @@ export function useAnalyse() {
             existingLength: currentLength,
             completedDraft: buildContinuityContext(fullText, generationContextTokens.value),
             hardRequirements,
-            reviewNotes: segmentIndex === segmentCount ? reviewNotes : undefined,
+            continuityLedger,
           })
           const segmentProvider = withGenerationConfig(provider, {
             maxTokens: Math.min(generationMaxTokens.value, Math.max(2048, Math.ceil(segmentTarget * 2.2))),
+            temperature: Math.min(generationTemperature.value, segmentIndex === segmentCount ? 0.55 : 0.65),
           })
 
           generationStage.value = `正在写第 ${segmentIndex}/${segmentCount} 部分…`
@@ -547,6 +575,14 @@ export function useAnalyse() {
             if (currentLength >= requestedMinLength)
               break
             const remainingLength = requestedMinLength - currentLength
+            generationStage.value = '正在整理前文连续性…'
+            const ledgerResponse = await generateContent(
+              selectedModelId.value,
+              [{ text: buildContinuityLedgerPrompt(planningSource, writingPlan, fullText, hardRequirements, mandatoryTermList, generationContextTokens.value) }],
+              CONTINUITY_SYSTEM_INSTRUCTION,
+              withGenerationConfig(provider, { temperature: 0.15, maxTokens: Math.min(generationMaxTokens.value, 700) }),
+            )
+            continuityLedger = ledgerResponse.text.trim()
             generationStage.value = `正在补足篇幅（约 ${currentLength}/${requestedMinLength} 字）…`
             result.value += '\n\n'
             response = await generateContent(
@@ -561,10 +597,11 @@ export function useAnalyse() {
                   existingLength: currentLength,
                   completedDraft: buildContinuityContext(fullText, generationContextTokens.value),
                   hardRequirements,
+                  continuityLedger,
                 }),
               }],
               DEFAULT_SYSTEM_INSTRUCTION,
-              provider,
+              withGenerationConfig(provider, { temperature: Math.min(generationTemperature.value, 0.55) }),
               (chunk) => {
                 result.value += chunk
               },
@@ -634,6 +671,9 @@ export function useAnalyse() {
       }
 
       fullText = removeRepeatedPassages(fullText)
+      const missingMandatoryTerms = getMissingMandatoryTerms(fullText, mandatoryTermList)
+      if (missingMandatoryTerms.length > 0)
+        resultWarningMsg.value = `以下指定词汇未被模型写入：${missingMandatoryTerms.join('、')}。这通常表示模型忽略了要求或受自身训练限制。`
       const lastImage = base64Image.value
 
       console.log(response)
@@ -742,9 +782,11 @@ export function useAnalyse() {
     autoContinueLongText,
     enhancedWritingFlow,
     additionalPrompt,
+    mandatoryTerms,
     result,
     errorMsg,
     saveErrorMsg,
+    resultWarningMsg,
     generationStage,
     analyseButtonLoading,
     analyseButtonDisabled,

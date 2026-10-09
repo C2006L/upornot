@@ -24,9 +24,11 @@ const {
   autoContinueLongText,
   enhancedWritingFlow,
   additionalPrompt,
+  mandatoryTerms,
   result,
   errorMsg,
   saveErrorMsg,
+  resultWarningMsg,
   generationStage,
   analyseButtonLoading,
   analyseButtonDisabled,
@@ -203,7 +205,14 @@ onBeforeRouteLeave(() => {
 
       <textarea v-model="additionalPrompt" placeholder="例如：人物实际穿着、饰品、称谓、动作顺序、环境细节。每条单独一行，模型会逐条作为硬约束执行……" rows="8" app-field mt-5 resize-y leading-relaxed />
       <p v-if="additionalPrompt.trim()" mt-2 text-xs leading-relaxed text-teal-700 dark:text-teal-300>
-        已启用硬约束注入：补充内容会覆盖图片中的不确定推断，并在规划、分段生成和最终复核时重复检查。
+        已启用硬约束注入：补充内容会覆盖图片中的不确定推断，并在规划、每段生成和连续性核对时重复检查。
+      </p>
+      <label block mt-4>
+        <span label>指定必须出现的词汇（可选）</span>
+        <textarea v-model="mandatoryTerms" placeholder="用逗号或换行分隔，最多 12 个。例如：词语甲，词语乙" rows="3" app-field resize-y leading-relaxed />
+      </label>
+      <p text-xs mt-2 text-slate-400>
+        程序会在最终结果中逐个核对；模型因自身训练拒绝的词无法由网页强制输出。
       </p>
       <div mt-3 flex="~ items-center justify-between gap-3">
         <span text-xs text-slate-400>{{ additionalPrompt.trim().length }} 字符</span>
@@ -269,6 +278,9 @@ onBeforeRouteLeave(() => {
     <div p="5 sm:6">
       <div v-if="errorMsg" p-4 rounded-xl whitespace-pre-wrap text-sm bg="red-500/10" text-red-700 dark:text-red-300 border="~ red-500/15">
         {{ errorMsg }}
+      </div>
+      <div v-if="resultWarningMsg" mb-4 p-4 rounded-xl whitespace-pre-wrap text-sm bg="amber-500/10" text-amber-800 dark:text-amber-200 border="~ amber-500/20">
+        {{ resultWarningMsg }}
       </div>
       <textarea v-if="isEditingResult" v-model="editedResultText" rows="20" app-field resize-y leading-relaxed />
       <article v-else-if="result" select-text class="result-paper">
