@@ -181,7 +181,7 @@ onBeforeRouteLeave(() => {
           <h2 text-lg font-bold>
             图片补充
           </h2><p text-xs mt-1 text-slate-500 dark:text-slate-400>
-            人工纠正模型容易看错的细节
+            高优先级硬约束：会在每一段生成前重新核对
           </p>
         </div>
       </div>
@@ -200,7 +200,10 @@ onBeforeRouteLeave(() => {
         </span>
       </div>
 
-      <textarea v-model="additionalPrompt" placeholder="例如：人物实际穿着、饰品、动作方向、环境细节……" rows="8" app-field mt-5 resize-y leading-relaxed />
+      <textarea v-model="additionalPrompt" placeholder="例如：人物实际穿着、饰品、称谓、动作顺序、环境细节。每条单独一行，模型会逐条作为硬约束执行……" rows="8" app-field mt-5 resize-y leading-relaxed />
+      <p v-if="additionalPrompt.trim()" mt-2 text-xs leading-relaxed text-teal-700 dark:text-teal-300>
+        已启用硬约束注入：补充内容会覆盖图片中的不确定推断，并在规划、分段生成和最终复核时重复检查。
+      </p>
       <div mt-3 flex="~ items-center justify-between gap-3">
         <span text-xs text-slate-400>{{ additionalPrompt.trim().length }} 字符</span>
         <button v-if="additionalPrompt.trim()" soft-btn px-3 py-1.5 text-xs @click="handleSaveAsPreset">

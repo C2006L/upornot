@@ -39,7 +39,17 @@ function buildTaskContract(taskPrompt: string, additionalPrompt: string, request
   return sections.join('\n\n')
 }
 
-function buildPlanningPrompt(taskContract: string): string {
+function buildHardRequirements(additionalPrompt: string): string {
+  if (!additionalPrompt)
+    return ''
+  return [
+    '以下内容是用户已经确认的补充事实与不可违反要求，优先级高于图片中的不确定推断。',
+    '必须逐条落实到正文；不能忽略、淡化、替换，也不能把它们原样列成清单或解释给读者。',
+    additionalPrompt,
+  ].join('\n')
+}
+
+function buildPlanningPrompt(taskContract: string, hardRequirements: string): string {
   return [
     '请结合图片，为下面的任务制作一份简洁但完整的内部写作蓝图。',
     '必须逐项输出以下栏目：',
@@ -51,6 +61,7 @@ function buildPlanningPrompt(taskContract: string): string {
     '控制在 1600 字以内，只输出蓝图，不写正文。',
     '',
     taskContract,
+    ...(hardRequirements ? ['## 最高优先级补充要求（必须逐条纳入蓝图）', hardRequirements] : []),
   ].join('\n')
 }
 
@@ -68,9 +79,10 @@ function buildSegmentPrompt(options: {
   targetLength: number
   existingLength: number
   completedDraft: string
+  hardRequirements: string
   reviewNotes?: string
 }): string {
-  const { taskContract, plan, segmentIndex, segmentCount, targetLength, existingLength, completedDraft, reviewNotes } = options
+  const { taskContract, plan, segmentIndex, segmentCount, targetLength, existingLength, completedDraft, hardRequirements, reviewNotes } = options
   const isFirst = segmentIndex === 1
   const isLast = segmentIndex === segmentCount
   const instructions = [
@@ -96,10 +108,13 @@ function buildSegmentPrompt(options: {
     ...(completedDraft ? ['## 已完成正文（这是已经发生且不可重写的历史，只能向后承接）', completedDraft] : []),
     '## 本轮写作指令',
     ...instructions,
+    ...(hardRequirements
+      ? ['## 最终硬约束核对（开始输出前在内部逐条确认；不得遗漏或复述为说明）', hardRequirements]
+      : []),
   ].join('\n\n')
 }
 
-function buildReviewPrompt(taskContract: string, plan: string, draft: string): string {
+function buildReviewPrompt(taskContract: string, plan: string, draft: string, hardRequirements: string): string {
   return [
     '请对照原始任务和写作蓝图审查当前正文。',
     '只列出最后一部分必须补齐的内容：遗漏要求、尚未完成的情节节点、称谓或视角错误、动作和状态矛盾。',
@@ -110,6 +125,7 @@ function buildReviewPrompt(taskContract: string, plan: string, draft: string): s
     plan,
     '## 当前正文',
     draft.slice(-10000),
+    ...(hardRequirements ? ['## 最高优先级补充要求（必须逐条检查）', hardRequirements] : []),
   ].join('\n\n')
 }
 
@@ -392,6 +408,7 @@ export function useAnalyse() {
         ? Math.floor(generationTargetLength.value)
         : getRequestedMinLength(taskPrompt)
       const userText = buildTaskContract(taskPrompt, additionalTaskPrompt, requestedMinLength)
+      const hardRequirements = buildHardRequirements(additionalTaskPrompt)
       const planningSource = [
         `## 用户任务\n${taskPrompt}`,
         ...(additionalTaskPrompt ? [`## 用户补充要求\n${additionalTaskPrompt}`] : []),
@@ -438,7 +455,7 @@ export function useAnalyse() {
         const planResponse = await generateContent(
           selectedModelId.value,
           [
-            { text: buildPlanningPrompt(planningSource) },
+            { text: buildPlanningPrompt(planningSource, hardRequirements) },
             { inlineData: { data: base64Image.value, mimeType } },
           ],
           PLANNING_SYSTEM_INSTRUCTION,
@@ -459,7 +476,7 @@ export function useAnalyse() {
             generationStage.value = '正在对照要求检查缺项…'
             const reviewResponse = await generateContent(
               selectedModelId.value,
-              [{ text: buildReviewPrompt(planningSource, writingPlan, fullText) }],
+              [{ text: buildReviewPrompt(planningSource, writingPlan, fullText, hardRequirements) }],
               REVIEW_SYSTEM_INSTRUCTION,
               withGenerationConfig(provider, { temperature: 0.2, maxTokens: Math.min(generationMaxTokens.value, 900) }),
             )
@@ -479,6 +496,7 @@ export function useAnalyse() {
             targetLength: segmentTarget,
             existingLength: currentLength,
             completedDraft: buildContinuityContext(fullText, generationContextTokens.value),
+            hardRequirements,
             reviewNotes: segmentIndex === segmentCount ? reviewNotes : undefined,
           })
           const segmentProvider = withGenerationConfig(provider, {
@@ -526,6 +544,7 @@ export function useAnalyse() {
                   targetLength: Math.max(700, remainingLength + 150),
                   existingLength: currentLength,
                   completedDraft: buildContinuityContext(fullText, generationContextTokens.value),
+                  hardRequirements,
                 }),
               }],
               DEFAULT_SYSTEM_INSTRUCTION,
@@ -548,7 +567,7 @@ export function useAnalyse() {
       else {
         generationStage.value = '正在生成正文…'
         const contents: Parameters<typeof generateContent>[1] = [
-          { text: userText },
+          { text: [userText, hardRequirements ? `## 最高优先级补充要求\n${hardRequirements}` : ''].filter(Boolean).join('\n\n') },
           { inlineData: { data: base64Image.value, mimeType } },
         ]
         response = await generateContent(
@@ -573,6 +592,7 @@ export function useAnalyse() {
               `当前正文约 ${currentLength} 字，还差约 ${remainingLength} 字。`,
               '保持已有的人物称谓、场景、时间线、叙述视角、物品状态和因果关系。从最后一句之后直接继续，不要重复前文、重新开场或另起标题。',
               `已完成正文（只能承接，严禁复述）：\n${buildContinuityContext(fullText, generationContextTokens.value)}`,
+              ...(hardRequirements ? [`最高优先级补充要求（逐条落实，不得遗漏）：\n${hardRequirements}`] : []),
             ].join('\n\n')
 
             result.value += '\n\n'
