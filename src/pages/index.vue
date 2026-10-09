@@ -26,6 +26,7 @@ const {
   additionalPrompt,
   result,
   errorMsg,
+  saveErrorMsg,
   generationStage,
   analyseButtonLoading,
   analyseButtonDisabled,
@@ -275,8 +276,12 @@ onBeforeRouteLeave(() => {
       </article>
     </div>
 
-    <footer v-if="result" p="4 sm:x-6" border="t slate-200/80 dark:white/8" bg="slate-50/70 dark:white/2" flex justify-end>
-      <button :disabled="saveButtonDisabled" soft-btn min-w-34 :class="saveButtonDisabled ? 'opacity-50 cursor-not-allowed' : ''" @click="handleSaveButtonClick">
+    <footer v-if="result" p="4 sm:x-6" border="t slate-200/80 dark:white/8" bg="slate-50/70 dark:white/2" flex="~ col sm:row sm:items-center sm:justify-between gap-3">
+      <p v-if="saveErrorMsg" text-xs text-red-600 dark:text-red-300>
+        {{ saveErrorMsg }}
+      </p>
+      <div v-else />
+      <button :disabled="saveButtonDisabled" soft-btn min-w-34 self-end :class="saveButtonDisabled ? 'opacity-50 cursor-not-allowed' : ''" @click="handleSaveButtonClick">
         <div :class="saveButtonDisabled ? 'i-carbon-checkmark' : 'i-carbon-bookmark-add'" />{{ saveButtonDisabled ? '已保存' : '保存到收藏' }}
       </button>
     </footer>
