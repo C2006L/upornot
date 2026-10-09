@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { FavoriteResult } from '~/types'
 import { useStorage } from '@vueuse/core'
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -12,8 +13,6 @@ const isMobile = true
 const sortOrder = useStorage<'newest' | 'oldest'>('favorites-sort-order', 'newest')
 
 const sortedResults = computed(() => {
-  if (!favoriteResults.data.value)
-    return []
   const sorted = [...favoriteResults.data.value]
   if (sortOrder.value === 'oldest') {
     sorted.sort((a, b) => a.time - b.time)
@@ -27,7 +26,7 @@ const sortedResults = computed(() => {
 const pageSize = useStorage('favorites-page-size', 5)
 const page = ref(1)
 
-const pageCount = computed(() => Math.max(1, Math.ceil((favoriteResults.data.value?.length ?? 0) / pageSize.value)))
+const pageCount = computed(() => Math.max(1, Math.ceil(favoriteResults.data.value.length / pageSize.value)))
 
 // 每页条数变化时，确保当前页不越界
 watch(pageSize, () => {
@@ -42,20 +41,21 @@ const pagedResults = computed(() => {
   return sortedResults.value.slice(start, start + pageSize.value)
 })
 
-function onDelete(time: number) {
+async function onDelete(time: number) {
   if (!confirm('确定要删除这个收藏吗？')) {
     return
   }
-  const idx = favoriteResults.data.value?.findIndex(item => item.time === time) ?? -1
+  const idx = favoriteResults.data.value.findIndex(item => item.time === time)
   if (idx !== -1) {
-    const hash = favoriteResults.data.value![idx].imageHash
-    favoriteResults.data.value?.splice(idx, 1)
-    const usedHashes = new Set(favoriteResults.data.value?.map(i => i.imageHash) ?? [])
+    const hash = favoriteResults.data.value[idx].imageHash
+    const nextResults = favoriteResults.data.value.filter(item => item.time !== time)
+    await favoriteResults.set(nextResults)
+    const usedHashes = new Set(nextResults.map(i => i.imageHash))
     deleteImageIfUnused(hash, usedHashes)
     markAsDeleted(time)
   }
   nextTick(() => {
-    const total = favoriteResults.data.value?.length ?? 0
+    const total = favoriteResults.data.value.length
     const maxPage = Math.max(1, Math.ceil(total / pageSize.value))
     if (page.value > maxPage) {
       page.value = maxPage
@@ -63,17 +63,17 @@ function onDelete(time: number) {
   })
 }
 
-function onUpdate(time: number, result: string) {
-  const idx = favoriteResults.data.value?.findIndex(item => item.time === time) ?? -1
+async function onUpdate(time: number, result: string) {
+  const idx = favoriteResults.data.value.findIndex(item => item.time === time)
   if (idx !== -1) {
-    favoriteResults.data.value![idx].result = result
+    const nextResults = [...favoriteResults.data.value]
+    nextResults[idx] = { ...nextResults[idx], result }
+    await favoriteResults.set(nextResults)
   }
 }
 
 async function onUpdateImageUrl(time: number, imageUrl: string) {
   const items = favoriteResults.data.value
-  if (!items)
-    return
   const idx = items.findIndex(item => item.time === time)
   if (idx === -1)
     return
@@ -81,36 +81,36 @@ async function onUpdateImageUrl(time: number, imageUrl: string) {
   const item = items[idx]
   const oldHash = item.imageHash
   const newHash = await computeStringHash(imageUrl)
+  let nextResults: FavoriteResult[]
 
   if (item.imageUrl) {
     // 已有外部链接 -> 编辑 URL：只更新这一项
-    item.imageUrl = imageUrl
-    item.imageHash = newHash
+    nextResults = items.map((fav, currentIndex) => currentIndex === idx
+      ? { ...fav, imageUrl, imageHash: newHash }
+      : fav)
   }
   else {
     // 文件 -> URL 迁移：所有引用同一张图片的收藏项同时迁移
-    for (const fav of items) {
-      if (fav.imageHash === oldHash && !fav.imageUrl) {
-        fav.imageUrl = imageUrl
-        fav.imageHash = newHash
-      }
-    }
+    nextResults = items.map(fav => fav.imageHash === oldHash && !fav.imageUrl
+      ? { ...fav, imageUrl, imageHash: newHash }
+      : fav)
     // 迁移后旧 hash 不再被引用，清理 IndexedDB 中的 base64
-    const usedHashes = new Set(items.map(i => i.imageHash))
+    const usedHashes = new Set(nextResults.map(i => i.imageHash))
     deleteImageIfUnused(oldHash, usedHashes)
   }
+  await favoriteResults.set(nextResults)
 }
 
 function onDeleteAll() {
   if (!confirm('确定要删除所有收藏吗？')) {
     return
   }
-  const allTimestamps = favoriteResults.data.value?.map(i => i.time) ?? []
+  const allTimestamps = favoriteResults.data.value.map(i => i.time)
   if (allTimestamps.length > 0) {
     const current = deletedTimestampsStore.data.value
     deletedTimestampsStore.data.value = [...new Set([...current, ...allTimestamps])]
   }
-  favoriteResults.data.value = []
+  void favoriteResults.set([])
   imageStore.data.value = {}
   page.value = 1
 }
@@ -144,18 +144,18 @@ function navigateToSettings() {
 
   <Transition name="fade">
     <div
-      :key="favoriteResults.data.value === undefined
+      :key="!favoriteResults.isFinished.value
         ? 'loading'
         : favoriteResults.data.value.length > 0
           ? 'list'
           : 'empty'"
     >
       <!-- loading: fix the sudden change of favorite results -->
-      <template v-if="favoriteResults.data.value === undefined">
-        <!-- <div text-center py-10 text-gray-400 flex flex-col items-center>
-          <div class="i-carbon-circle-dash animate-spin text-2xl mb-2" />
-          加载中...
-        </div> -->
+      <template v-if="!favoriteResults.isFinished.value">
+        <div text-center py-10 text-gray-400 flex flex-col items-center>
+          <div i-carbon-circle-dash animate-spin text-2xl mb-2 />
+          正在加载收藏…
+        </div>
       </template>
 
       <!-- has data -->
@@ -176,8 +176,8 @@ function navigateToSettings() {
             :key="item.time"
             :item="item"
             :is-mobile="isMobile"
-            @delete="onDelete(item.time)"
-            @update="(result: string) => onUpdate(item.time, result)"
+            @delete="void onDelete(item.time)"
+            @update="(result: string) => void onUpdate(item.time, result)"
             @update-image-url="(imageUrl: string) => onUpdateImageUrl(item.time, imageUrl)"
           />
         </TransitionGroup>

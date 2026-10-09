@@ -733,14 +733,17 @@ export async function computeStringHash(str: string): Promise<string> {
 // ──────────────────────────────────────────────
 export const imageStore = useIDBKeyval<Record<string, string>>('favorite-images', {}, { shallow: true })
 
-export const favoriteResults = useIDBKeyval<FavoriteResult[] | undefined>('favorite-results', undefined)
+export const favoriteResults = useIDBKeyval<FavoriteResult[]>('favorite-results', [])
 
 export async function saveImage(base64: string, mimeType: string): Promise<string> {
   const hash = await computeImageHash(base64)
-  if (!imageStore.data.value[hash])
-    imageStore.data.value = { ...imageStore.data.value, [hash]: base64 }
-  if (!imageStore.data.value[`${hash}:mime`])
-    imageStore.data.value = { ...imageStore.data.value, [`${hash}:mime`]: mimeType }
+  if (!imageStore.data.value[hash] || !imageStore.data.value[`${hash}:mime`]) {
+    await imageStore.set({
+      ...imageStore.data.value,
+      [hash]: imageStore.data.value[hash] || base64,
+      [`${hash}:mime`]: imageStore.data.value[`${hash}:mime`] || mimeType,
+    })
+  }
   return hash
 }
 

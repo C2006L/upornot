@@ -1,7 +1,7 @@
 import type { FavoriteResult, ProviderConfig } from '~/types'
 import { useStorage } from '@vueuse/core'
-import { computed, ref } from 'vue'
-import { addAdditionalPreset, additionalPromptPresets, computeStringHash, favoriteResults, fileToBase64, generateContent, removeAdditionalPreset, saveImage } from '~/logic'
+import { computed, ref, watch } from 'vue'
+import { addAdditionalPreset, additionalPromptPresets, computeStringHash, favoriteResults, fileToBase64, generateContent, imageStore, removeAdditionalPreset, saveImage } from '~/logic'
 
 const DEFAULT_SYSTEM_INSTRUCTION = '你是一个图像理解与长文写作助手。用户要求的优先级最高。请严格遵循任务、人物设定、称谓、叙述视角、事件顺序、格式、语言和篇幅，不得擅自简化或遗漏。写作时保持物理动作、空间位置、服装状态和前后因果连续。'
 const PLANNING_SYSTEM_INSTRUCTION = '你是长文编辑与视觉分析助手。你的工作是把图片事实和用户要求整理成可执行的写作蓝图，不创作正文，不删减用户要求，不输出与任务无关的说明。'
@@ -257,6 +257,7 @@ export function useAnalyse() {
   const additionalPrompt = ref('')
   const result = ref('')
   const errorMsg = ref('')
+  const saveErrorMsg = ref('')
   const generationStage = ref('')
   const analyseButtonLoading = ref(false)
   const saveButtonDisabled = ref(false)
@@ -266,6 +267,20 @@ export function useAnalyse() {
   const editedResultText = ref('')
 
   const lastFavoriteResult = ref<FavoriteResult | null>(null)
+
+  function waitForStorageLoad(storage: { isFinished: { value: boolean } }): Promise<void> {
+    if (storage.isFinished.value)
+      return Promise.resolve()
+
+    return new Promise((resolve) => {
+      const stop = watch(() => storage.isFinished.value, (finished) => {
+        if (finished) {
+          stop()
+          resolve()
+        }
+      })
+    })
+  }
 
   const analyseButtonDisabled = computed(() => {
     if (!selectedModelId.value || !selectedPromptText.value || !selectedApiUrl.value)
@@ -398,6 +413,7 @@ export function useAnalyse() {
 
     analyseButtonLoading.value = true
     errorMsg.value = ''
+    saveErrorMsg.value = ''
     result.value = ''
     generationStage.value = '正在准备图片…'
 
@@ -659,37 +675,57 @@ export function useAnalyse() {
   }
 
   async function handleSaveButtonClick() {
-    saveButtonDisabled.value = true
+    if (saveButtonDisabled.value)
+      return
+
     const pending = lastFavoriteResult.value as any
-    const base64 = pending._pendingBase64 as string
-    const mimeType = pending.mimeType as string
-    const sourceUrl = pending._sourceUrl as string | undefined
-
-    let hash: string
-    const item: FavoriteResult = {
-      model: pending.model,
-      mode: pending.mode,
-      imageHash: '',
-      mimeType,
-      time: pending.time,
-      result: pending.result,
-      prompt: pending.prompt ?? '',
-      additionalPrompt: pending.additionalPrompt ?? '',
+    if (!pending) {
+      saveErrorMsg.value = '当前结果尚未准备好收藏，请重新生成后再试。'
+      return
     }
 
-    if (sourceUrl) {
-      hash = await computeStringHash(sourceUrl)
-      item.imageHash = hash
-      item.imageUrl = sourceUrl
-    }
-    else {
-      hash = await saveImage(base64, mimeType)
-      item.imageHash = hash
-    }
+    saveButtonDisabled.value = true
+    try {
+      await Promise.all([
+        waitForStorageLoad(favoriteResults),
+        waitForStorageLoad(imageStore),
+      ])
 
-    if (!favoriteResults.data.value)
-      favoriteResults.data.value = []
-    favoriteResults.data.value.unshift(item)
+      const base64 = pending._pendingBase64 as string
+      const mimeType = pending.mimeType as string
+      const sourceUrl = pending._sourceUrl as string | undefined
+      let hash: string
+      const item: FavoriteResult = {
+        model: pending.model,
+        mode: pending.mode,
+        imageHash: '',
+        mimeType,
+        time: pending.time,
+        result: pending.result,
+        prompt: pending.prompt ?? '',
+        additionalPrompt: pending.additionalPrompt ?? '',
+      }
+
+      if (sourceUrl) {
+        hash = await computeStringHash(sourceUrl)
+        item.imageHash = hash
+        item.imageUrl = sourceUrl
+      }
+      else {
+        if (!base64)
+          throw new Error('缺少待保存的图片数据，请重新上传图片并生成结果。')
+        hash = await saveImage(base64, mimeType)
+        item.imageHash = hash
+      }
+
+      await favoriteResults.set([item, ...favoriteResults.data.value])
+      saveErrorMsg.value = ''
+    }
+    catch (error) {
+      console.error('[Favorite Save Error]', error)
+      saveButtonDisabled.value = false
+      saveErrorMsg.value = `收藏失败：${(error as Error).message || String(error)}`
+    }
   }
 
   return {
@@ -708,6 +744,7 @@ export function useAnalyse() {
     additionalPrompt,
     result,
     errorMsg,
+    saveErrorMsg,
     generationStage,
     analyseButtonLoading,
     analyseButtonDisabled,
