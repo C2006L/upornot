@@ -1,13 +1,36 @@
 import type { FavoriteResult, ProviderConfig } from '~/types'
 import { useStorage } from '@vueuse/core'
-import { computed, ref, watch } from 'vue'
-import { addAdditionalPreset, additionalPromptPresets, computeStringHash, favoriteResults, fileToBase64, generateContent, imageStore, removeAdditionalPreset, saveImage } from '~/logic'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { addAdditionalPreset, additionalPromptPresets, computeStringHash, favoriteResults, fileToBase64, generateContent, imageStore, persistFavoriteResults, removeAdditionalPreset, saveImage } from '~/logic'
 
 const DEFAULT_SYSTEM_INSTRUCTION = '你是一个图像理解与长文写作助手。用户要求的优先级最高。请严格遵循任务、人物设定、称谓、叙述视角、事件顺序、格式、语言和篇幅，不得擅自简化或遗漏。写作时保持物理动作、空间位置、服装状态和前后因果连续。'
 const PLANNING_SYSTEM_INSTRUCTION = '你是长文编辑与视觉分析助手。你的工作是把图片事实和用户要求整理成可执行的写作蓝图，不创作正文，不删减用户要求，不输出与任务无关的说明。'
 const MAX_CONTINUATION_ROUNDS = 5
 const TARGET_SEGMENT_LENGTH = 1100
 const MAX_PLANNED_SEGMENTS = 6
+const ANALYSIS_DRAFT_KEY = 'analysis-result-draft-v1'
+
+interface AnalysisDraft {
+  result: string
+  model: string
+  prompt: string
+  additionalPrompt: string
+  time: number
+  wasGenerating: boolean
+}
+
+function readAnalysisDraft(): AnalysisDraft | null {
+  try {
+    const raw = sessionStorage.getItem(ANALYSIS_DRAFT_KEY)
+    if (!raw)
+      return null
+    const draft = JSON.parse(raw) as AnalysisDraft
+    return draft?.result ? draft : null
+  }
+  catch {
+    return null
+  }
+}
 
 function getRequestedMinLength(prompt: string): number | undefined {
   const matches = [
@@ -239,6 +262,7 @@ function removeRepeatedPassages(text: string): string {
 }
 
 export function useAnalyse() {
+  const restoredDraft = readAnalysisDraft()
   const image = ref<File | string | null>(null)
   const base64Image = ref<string | null>(null)
 
@@ -253,12 +277,16 @@ export function useAnalyse() {
   const generationRepeatPenalty = useStorage<number>('generation-repeat-penalty', 1.15)
   const autoContinueLongText = useStorage<boolean>('auto-continue-long-text', true)
   const enhancedWritingFlow = useStorage<boolean>('enhanced-writing-flow', true)
-  const additionalPrompt = ref('')
+  const additionalPrompt = ref(restoredDraft?.additionalPrompt ?? '')
   const mandatoryTerms = useStorage<string>('mandatory-terms', '')
-  const result = ref('')
+  const result = ref(restoredDraft?.result ?? '')
   const errorMsg = ref('')
   const saveErrorMsg = ref('')
-  const resultWarningMsg = ref('')
+  const resultWarningMsg = ref(restoredDraft
+    ? restoredDraft.wasGenerating
+      ? '页面曾在生成过程中刷新，已恢复刷新前收到的内容。生成请求已中断，你可以编辑、复制或将当前草稿收藏为纯文本。'
+      : '已恢复上次未保存的生成结果。'
+    : '')
   const generationStage = ref('')
   const analyseButtonLoading = ref(false)
   const saveButtonDisabled = ref(false)
@@ -267,7 +295,69 @@ export function useAnalyse() {
   const isEditingResult = ref(false)
   const editedResultText = ref('')
 
-  const lastFavoriteResult = ref<FavoriteResult | null>(null)
+  const lastFavoriteResult = ref<FavoriteResult | null>(restoredDraft
+    ? {
+        model: restoredDraft.model,
+        mode: 'custom',
+        imageHash: '',
+        mimeType: '',
+        time: restoredDraft.time,
+        result: restoredDraft.result,
+        prompt: restoredDraft.prompt,
+        additionalPrompt: restoredDraft.additionalPrompt,
+      }
+    : null)
+  let currentDraftTime = restoredDraft?.time ?? Date.now()
+  let draftTimer: ReturnType<typeof setTimeout> | null = null
+  let draftPersistenceEnabled = true
+
+  function persistAnalysisDraft() {
+    if (!draftPersistenceEnabled || !result.value) {
+      sessionStorage.removeItem(ANALYSIS_DRAFT_KEY)
+      return
+    }
+    const draft: AnalysisDraft = {
+      result: result.value,
+      model: selectedModelId.value,
+      prompt: selectedPromptText.value,
+      additionalPrompt: additionalPrompt.value.trim(),
+      time: currentDraftTime,
+      wasGenerating: analyseButtonLoading.value,
+    }
+    try {
+      sessionStorage.setItem(ANALYSIS_DRAFT_KEY, JSON.stringify(draft))
+    }
+    catch (error) {
+      console.warn('[Draft Save Error]', error)
+    }
+  }
+
+  function scheduleDraftSave() {
+    if (draftTimer)
+      return
+    draftTimer = setTimeout(() => {
+      draftTimer = null
+      persistAnalysisDraft()
+    }, 250)
+  }
+
+  watch([result, analyseButtonLoading], scheduleDraftSave)
+
+  function handleBeforeUnload(event: BeforeUnloadEvent) {
+    persistAnalysisDraft()
+    if (analyseButtonLoading.value) {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+  }
+
+  window.addEventListener('beforeunload', handleBeforeUnload)
+  onBeforeUnmount(() => {
+    if (draftTimer)
+      clearTimeout(draftTimer)
+    persistAnalysisDraft()
+    window.removeEventListener('beforeunload', handleBeforeUnload)
+  })
 
   function waitForStorageLoad(storage: { isFinished: { value: boolean } }): Promise<void> {
     if (storage.isFinished.value)
@@ -334,6 +424,8 @@ export function useAnalyse() {
     result.value = editedResultText.value
     if (lastFavoriteResult.value)
       lastFavoriteResult.value.result = editedResultText.value
+    saveButtonDisabled.value = false
+    draftPersistenceEnabled = true
     isEditingResult.value = false
   }
 
@@ -343,6 +435,8 @@ export function useAnalyse() {
 
   // 仅用于开发测试
   function handleFillTestResult() {
+    draftPersistenceEnabled = true
+    currentDraftTime = Date.now()
     errorMsg.value = ''
     isEditingResult.value = false
     saveButtonDisabled.value = false
@@ -413,6 +507,8 @@ export function useAnalyse() {
     }
 
     analyseButtonLoading.value = true
+    draftPersistenceEnabled = true
+    currentDraftTime = Date.now()
     errorMsg.value = ''
     saveErrorMsg.value = ''
     resultWarningMsg.value = ''
@@ -652,7 +748,7 @@ export function useAnalyse() {
       const base64 = pending._pendingBase64 as string
       const mimeType = pending.mimeType as string
       const sourceUrl = pending._sourceUrl as string | undefined
-      let hash: string
+      let imageSaveWarning = ''
       const item: FavoriteResult = {
         model: pending.model,
         mode: pending.mode,
@@ -665,19 +761,28 @@ export function useAnalyse() {
       }
 
       if (sourceUrl) {
-        hash = await computeStringHash(sourceUrl)
-        item.imageHash = hash
+        item.imageHash = await computeStringHash(sourceUrl)
         item.imageUrl = sourceUrl
       }
-      else {
-        if (!base64)
-          throw new Error('缺少待保存的图片数据，请重新上传图片并生成结果。')
-        hash = await saveImage(base64, mimeType)
-        item.imageHash = hash
+      else if (base64) {
+        try {
+          item.imageHash = await saveImage(base64, mimeType)
+        }
+        catch (error) {
+          console.warn('[Favorite Image Save Error]', error)
+          imageSaveWarning = `文章已收藏，但图片因浏览器存储失败而未保存：${(error as Error).message || String(error)}`
+        }
       }
 
-      await favoriteResults.set([item, ...favoriteResults.data.value])
+      await persistFavoriteResults([item, ...favoriteResults.data.value])
+      const saved = favoriteResults.data.value.some(favorite => favorite.time === item.time && favorite.result === item.result)
+      if (!saved)
+        throw new Error('收藏回读校验失败，请重试。')
       saveErrorMsg.value = ''
+      if (imageSaveWarning)
+        resultWarningMsg.value = imageSaveWarning
+      draftPersistenceEnabled = false
+      sessionStorage.removeItem(ANALYSIS_DRAFT_KEY)
     }
     catch (error) {
       console.error('[Favorite Save Error]', error)

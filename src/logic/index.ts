@@ -1,6 +1,7 @@
 import type { CustomPrompt, FavoriteResult, GenerationConfig, ProviderConfig } from '~/types'
 import { useDark, useStorage, useToggle } from '@vueuse/core'
 import { useIDBKeyval } from '@vueuse/integrations/useIDBKeyval'
+import { get as idbGet, set as idbSet } from 'idb-keyval'
 import { defaultDescriptionPrompt, defaultNovelPrompt } from './prompts'
 
 export const isDark = useDark()
@@ -735,10 +736,49 @@ export const imageStore = useIDBKeyval<Record<string, string>>('favorite-images'
 
 export const favoriteResults = useIDBKeyval<FavoriteResult[]>('favorite-results', [])
 
+const FAVORITE_RESULTS_KEY = 'favorite-results'
+const FAVORITE_IMAGES_KEY = 'favorite-images'
+
+/** 直接写入并回读校验，避免 useIDBKeyval 吞掉异常后仍显示保存成功。 */
+export async function persistFavoriteResults(items: FavoriteResult[]): Promise<void> {
+  const snapshot = items.map(item => ({ ...item }))
+  await idbSet(FAVORITE_RESULTS_KEY, snapshot)
+  const stored = await idbGet<FavoriteResult[]>(FAVORITE_RESULTS_KEY)
+  const verified = Array.isArray(stored)
+    && stored.length === snapshot.length
+    && snapshot.every((item, index) => {
+      const saved = stored[index]
+      return saved?.time === item.time
+        && saved?.model === item.model
+        && saved?.imageHash === item.imageHash
+        && saved?.result === item.result
+    })
+
+  if (!verified)
+    throw new Error('浏览器未能持久化收藏数据，请检查隐私模式或可用存储空间。')
+
+  favoriteResults.data.value = stored
+}
+
+export async function persistImageStore(images: Record<string, string>): Promise<void> {
+  const snapshot = { ...images }
+  await idbSet(FAVORITE_IMAGES_KEY, snapshot)
+  const stored = await idbGet<Record<string, string>>(FAVORITE_IMAGES_KEY)
+  const keys = Object.keys(snapshot)
+  const verified = stored != null
+    && Object.keys(stored).length === keys.length
+    && keys.every(key => stored[key] === snapshot[key])
+
+  if (!verified)
+    throw new Error('浏览器未能持久化图片，可能是存储空间不足。')
+
+  imageStore.data.value = stored
+}
+
 export async function saveImage(base64: string, mimeType: string): Promise<string> {
   const hash = await computeImageHash(base64)
   if (!imageStore.data.value[hash] || !imageStore.data.value[`${hash}:mime`]) {
-    await imageStore.set({
+    await persistImageStore({
       ...imageStore.data.value,
       [hash]: imageStore.data.value[hash] || base64,
       [`${hash}:mime`]: imageStore.data.value[`${hash}:mime`] || mimeType,

@@ -219,12 +219,20 @@ function downloadImage() {
           外部链接
         </span>
         <span
-          v-else
+          v-else-if="props.item.imageHash"
           px-1 py-0 rounded text-2xs font-medium
           bg-teal-100 text-teal-800
           dark:bg-teal-900 dark:text-teal-200
         >
           图片文件
+        </span>
+        <span
+          v-else
+          px-1 py-0 rounded text-2xs font-medium
+          bg-slate-100 text-slate-700
+          dark:bg-slate-800 dark:text-slate-200
+        >
+          纯文本
         </span>
       </div>
 
@@ -268,6 +276,7 @@ function downloadImage() {
             {{ copiedKey === 'additionalPrompt' ? '已复制' : '复制额外提示词' }}
           </button>
           <button
+            v-if="imageSrc"
             type="button" title="下载图片"
             flex="~ items-center gap-1" px-3 py-1.5 rounded-md text-xs text-white font-bold
             bg-teal-600 hover:bg-teal-500
@@ -381,7 +390,7 @@ function downloadImage() {
       </div>
     </div>
     <div
-      v-else
+      v-else-if="imageSrc"
       border="~ base rounded"
       bg="light dark:dark"
       w-full min-h-40
@@ -395,6 +404,16 @@ function downloadImage() {
         rounded max-h-100 max-w-full object-contain
         bg-transparent block
       >
+    </div>
+    <div
+      v-else
+      border="~ dashed base rounded"
+      bg="light dark:dark"
+      w-full min-h-24
+      flex items-center justify-center
+      text-sm opacity-55
+    >
+      此收藏仅包含文字，可通过“编辑图片链接”补充图片
     </div>
 
     <div

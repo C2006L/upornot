@@ -5,7 +5,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import FavoritesItem from '~/components/FavoritesItem.vue'
 import FavoritesToolbar from '~/components/FavoritesToolbar.vue'
-import { computeStringHash, deletedTimestampsStore, deleteImageIfUnused, favoriteResults, imageStore, markAsDeleted } from '~/logic'
+import { computeStringHash, deletedTimestampsStore, deleteImageIfUnused, favoriteResults, markAsDeleted, persistFavoriteResults, persistImageStore } from '~/logic'
 
 const router = useRouter()
 // const isMobile = useMediaQuery('(max-width: 768px)')
@@ -49,7 +49,7 @@ async function onDelete(time: number) {
   if (idx !== -1) {
     const hash = favoriteResults.data.value[idx].imageHash
     const nextResults = favoriteResults.data.value.filter(item => item.time !== time)
-    await favoriteResults.set(nextResults)
+    await persistFavoriteResults(nextResults)
     const usedHashes = new Set(nextResults.map(i => i.imageHash))
     deleteImageIfUnused(hash, usedHashes)
     markAsDeleted(time)
@@ -68,7 +68,7 @@ async function onUpdate(time: number, result: string) {
   if (idx !== -1) {
     const nextResults = [...favoriteResults.data.value]
     nextResults[idx] = { ...nextResults[idx], result }
-    await favoriteResults.set(nextResults)
+    await persistFavoriteResults(nextResults)
   }
 }
 
@@ -98,10 +98,10 @@ async function onUpdateImageUrl(time: number, imageUrl: string) {
     const usedHashes = new Set(nextResults.map(i => i.imageHash))
     deleteImageIfUnused(oldHash, usedHashes)
   }
-  await favoriteResults.set(nextResults)
+  await persistFavoriteResults(nextResults)
 }
 
-function onDeleteAll() {
+async function onDeleteAll() {
   if (!confirm('确定要删除所有收藏吗？')) {
     return
   }
@@ -110,8 +110,8 @@ function onDeleteAll() {
     const current = deletedTimestampsStore.data.value
     deletedTimestampsStore.data.value = [...new Set([...current, ...allTimestamps])]
   }
-  void favoriteResults.set([])
-  imageStore.data.value = {}
+  await persistFavoriteResults([])
+  await persistImageStore({})
   page.value = 1
 }
 
